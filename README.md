@@ -20,7 +20,7 @@
 
 notebooks/
 
-- 00_environment_setup.md
+- 00_개발환경 셋팅.md
 - 01_수요예측_개요.ipynb
 - 02_데이터_로딩_및_전처리.ipynb
 - 03_특징_엔지니어링.ipynb
@@ -35,7 +35,7 @@ notebooks/
 ---
 
 # 개발환경 설정
-먼저 다음 페이지(00_environment_setup.md)를 참고하여 개발환경을 준비합니다.
+먼저 다음 페이지(00_개발환경 셋팅.md)를 참고하여 개발환경을 준비합니다.
 
 # 필요 라이브러리 설치
 다음 명령어로 필요한 라이브러리를 설치할 수 있습니다. (pip install -r requirements.txt)
