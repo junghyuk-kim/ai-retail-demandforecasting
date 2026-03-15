@@ -1,6 +1,10 @@
 numpy
 pandas
 matplotlib
+pyarrow
+fastparquet
+openpyxl
+
 seaborn
 scikit-learn
 scipy
