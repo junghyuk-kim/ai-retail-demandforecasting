@@ -20,17 +20,17 @@
 
 notebooks/
 
-00_environment_setup.md
-01_수요예측_개요.ipynb
-02_데이터_로딩_및_전처리.ipynb
-03_특징_엔지니어링.ipynb
-04_수요패턴_분석.ipynb
-05_rule_based_분류.ipynb
-06_클러스터링_방법.ipynb
-07_머신러닝_예측모델.ipynb
-08_딥러닝_예측모델.ipynb
-09_임베딩_기반_시계열분석.ipynb
-10_하이브리드_수요예측.ipynb
+- 00_environment_setup.md
+- 01_수요예측_개요.ipynb
+- 02_데이터_로딩_및_전처리.ipynb
+- 03_특징_엔지니어링.ipynb
+- 04_수요패턴_분석.ipynb
+- 05_rule_based_분류.ipynb
+- 06_클러스터링_방법.ipynb
+- 07_머신러닝_예측모델.ipynb
+- 08_딥러닝_예측모델.ipynb
+- 09_임베딩_기반_시계열분석.ipynb
+- 10_하이브리드_수요예측.ipynb
 
 ---
 
