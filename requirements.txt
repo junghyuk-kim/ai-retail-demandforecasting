@@ -4,14 +4,3 @@ matplotlib
 pyarrow
 fastparquet
 openpyxl
-
-seaborn
-scikit-learn
-scipy
-statsmodels
-xgboost
-lightgbm
-tqdm
-jupyter
-notebook
-ipykernel
