@@ -16,7 +16,7 @@ def _make_windows(series: np.ndarray, lookback: int, horizon: int):
 
 
 class LSTMForecaster(nn.Module):
-    def __init__(self, horizon: int, hidden: int = 64):
+    def __init__(self, lookback: int, horizon: int, hidden: int = 64):
         super().__init__()
         self.lstm = nn.LSTM(1, hidden, batch_first=True, num_layers=2)
         self.fc = nn.Linear(hidden, horizon)
