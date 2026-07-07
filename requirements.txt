@@ -15,3 +15,5 @@ optuna
 tqdm
 tslearn
 dtaidistance
+pyts
+tqdm

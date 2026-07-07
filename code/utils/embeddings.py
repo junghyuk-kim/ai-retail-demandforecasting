@@ -1,0 +1,208 @@
+"""Time-series embedding methods (PCA, DTW, AE, GAF-CNN, TS2Vec, PatchTST)."""
+from __future__ import annotations
+
+import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.manifold import MDS
+from sklearn.preprocessing import StandardScaler
+
+
+def embed_pca(X: np.ndarray, n_components: int = 10) -> np.ndarray:
+    n_components = min(n_components, X.shape[0] - 1, X.shape[1])
+    return PCA(n_components=n_components, random_state=42).fit_transform(StandardScaler().fit_transform(X))
+
+
+def embed_dtw_mds(X: np.ndarray, n_components: int = 10) -> np.ndarray:
+    try:
+        from tslearn.metrics import cdist_dtw
+
+        dist = cdist_dtw(X)
+    except Exception:
+        from scipy.spatial.distance import pdist, squareform
+
+        dist = squareform(pdist(X, metric="euclidean"))
+    n_components = min(n_components, X.shape[0] - 1)
+    return MDS(n_components=n_components, dissimilarity="precomputed", random_state=42).fit_transform(dist)
+
+
+def embed_autoencoder(X: np.ndarray, n_components: int = 10, epochs: int = 80) -> np.ndarray:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+
+    device = torch.device("cpu")
+    Xs = StandardScaler().fit_transform(X).astype(np.float32)
+    tensor = torch.tensor(Xs)
+    ds = TensorDataset(tensor)
+    loader = DataLoader(ds, batch_size=32, shuffle=True)
+
+    class AE(nn.Module):
+        def __init__(self, d_in: int, d_latent: int):
+            super().__init__()
+            h = max(d_latent * 2, 32)
+            self.enc = nn.Sequential(nn.Linear(d_in, h), nn.ReLU(), nn.Linear(h, d_latent))
+            self.dec = nn.Sequential(nn.Linear(d_latent, h), nn.ReLU(), nn.Linear(h, d_in))
+
+        def forward(self, x):
+            z = self.enc(x)
+            return self.dec(z), z
+
+    model = AE(Xs.shape[1], n_components).to(device)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    loss_fn = nn.MSELoss()
+    model.train()
+    for _ in range(epochs):
+        for (batch,) in loader:
+            batch = batch.to(device)
+            opt.zero_grad()
+            recon, _ = model(batch)
+            loss = loss_fn(recon, batch)
+            loss.backward()
+            opt.step()
+    model.eval()
+    with torch.no_grad():
+        _, z = model(torch.tensor(Xs).to(device))
+    return z.cpu().numpy()
+
+
+def embed_gaf_cnn(X: np.ndarray, n_components: int = 10, epochs: int = 60) -> np.ndarray:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+
+    try:
+        from pyts.image import GramianAngularField
+    except Exception:
+        return embed_pca(X, n_components)
+
+    gaf = GramianAngularField(image_size=min(32, X.shape[1]))
+    imgs = gaf.fit_transform(StandardScaler().fit_transform(X)).astype(np.float32)
+    imgs = imgs[:, None, :, :]
+    device = torch.device("cpu")
+
+    class GAFCNN(nn.Module):
+        def __init__(self, latent: int):
+            super().__init__()
+            self.cnn = nn.Sequential(
+                nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+                nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.AdaptiveAvgPool2d((1, 1)),
+            )
+            self.fc = nn.Linear(32, latent)
+
+        def forward(self, x):
+            h = self.cnn(x).view(x.size(0), -1)
+            return self.fc(h)
+
+    model = GAFCNN(n_components).to(device)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    ds = TensorDataset(torch.tensor(imgs))
+    loader = DataLoader(ds, batch_size=16, shuffle=True)
+    model.train()
+    for _ in range(epochs):
+        for (batch,) in loader:
+            batch = batch.to(device)
+            opt.zero_grad()
+            z = model(batch)
+            loss = (z ** 2).mean()
+            loss.backward()
+            opt.step()
+    model.eval()
+    with torch.no_grad():
+        z = model(torch.tensor(imgs).to(device))
+    return z.cpu().numpy()
+
+
+def embed_ts2vec(X: np.ndarray, n_components: int = 10, epochs: int = 80) -> np.ndarray:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+
+    device = torch.device("cpu")
+    Xs = StandardScaler().fit_transform(X).astype(np.float32)
+    t = torch.tensor(Xs)
+
+    class Encoder(nn.Module):
+        def __init__(self, d_in: int, d_out: int):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(d_in, 128), nn.ReLU(),
+                nn.Linear(128, 64), nn.ReLU(),
+                nn.Linear(64, d_out),
+            )
+
+        def forward(self, x):
+            return self.net(x)
+
+    enc = Encoder(Xs.shape[1], n_components).to(device)
+    opt = torch.optim.Adam(enc.parameters(), lr=1e-3)
+    ds = TensorDataset(t)
+    loader = DataLoader(ds, batch_size=32, shuffle=True)
+    enc.train()
+    for _ in range(epochs):
+        for (batch,) in loader:
+            batch = batch.to(device)
+            noise = batch + 0.05 * torch.randn_like(batch)
+            opt.zero_grad()
+            z1 = enc(batch)
+            z2 = enc(noise)
+            loss = ((z1 - z2) ** 2).mean()
+            loss.backward()
+            opt.step()
+    enc.eval()
+    with torch.no_grad():
+        return enc(t.to(device)).cpu().numpy()
+
+
+def embed_patchtst(X: np.ndarray, n_components: int = 10, patch_len: int = 8, epochs: int = 80) -> np.ndarray:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+
+    device = torch.device("cpu")
+    Xs = StandardScaler().fit_transform(X).astype(np.float32)
+    seq_len = Xs.shape[1]
+    patch_len = min(patch_len, seq_len)
+    n_patches = seq_len // patch_len
+    if n_patches < 1:
+        return embed_pca(X, n_components)
+    Xp = Xs[:, : n_patches * patch_len].reshape(Xs.shape[0], n_patches, patch_len)
+    t = torch.tensor(Xp)
+
+    class PatchTSTEncoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = nn.Linear(patch_len, n_components)
+            enc_layer = nn.TransformerEncoderLayer(d_model=n_components, nhead=2, batch_first=True)
+            self.encoder = nn.TransformerEncoder(enc_layer, num_layers=2)
+
+        def forward(self, x):
+            h = self.proj(x)
+            h = self.encoder(h)
+            return h.mean(dim=1)
+
+    model = PatchTSTEncoder().to(device)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    ds = TensorDataset(t)
+    loader = DataLoader(ds, batch_size=32, shuffle=True)
+    model.train()
+    for _ in range(epochs):
+        for (batch,) in loader:
+            batch = batch.to(device)
+            opt.zero_grad()
+            z = model(batch)
+            loss = (z ** 2).mean()
+            loss.backward()
+            opt.step()
+    model.eval()
+    with torch.no_grad():
+        return model(t.to(device)).cpu().numpy()
+
+
+EMBEDDERS = {
+    "PCA": embed_pca,
+    "DTW": embed_dtw_mds,
+    "AE": embed_autoencoder,
+    "GAF-CNN": embed_gaf_cnn,
+    "TS2Vec": embed_ts2vec,
+    "PatchTST": embed_patchtst,
+}
