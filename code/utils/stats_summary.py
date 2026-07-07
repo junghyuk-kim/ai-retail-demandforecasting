@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from scipy.stats import kurtosis, skew
 
 
 def system_level_weekly_stats(df_weekly: pd.DataFrame, type_val: str) -> pd.DataFrame:
@@ -10,6 +11,7 @@ def system_level_weekly_stats(df_weekly: pd.DataFrame, type_val: str) -> pd.Data
     sub = df_weekly[df_weekly["type"] == type_val]
     sys_ts = sub.groupby("yearweek", as_index=False)["sales"].sum()
     s = sys_ts["sales"]
+
     return pd.DataFrame(
         [{
             "type": type_val,
@@ -20,6 +22,8 @@ def system_level_weekly_stats(df_weekly: pd.DataFrame, type_val: str) -> pd.Data
             "std": s.std(ddof=1),
             "variance": s.var(ddof=1),
             "cv": s.std(ddof=1) / s.mean() if s.mean() else np.nan,
+            "skewness": skew(s, bias=False) if len(s) > 2 else np.nan,
+            "kurtosis": kurtosis(s, fisher=True, bias=False) if len(s) > 3 else np.nan,
             "min": s.min(),
             "max": s.max(),
         }]
