@@ -47,6 +47,11 @@ def fix_notebook(path: Path) -> None:
 
 def execute_notebook(path: Path, timeout: int = 7200) -> None:
     path = path.resolve()
+    # Repair schema before execute (EditNotebook may strip output fields)
+    try:
+        fix_notebook(path)
+    except Exception:
+        pass
     subprocess.run(
         [
             sys.executable,
