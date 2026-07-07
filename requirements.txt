@@ -1,6 +1,17 @@
 numpy
 pandas
 matplotlib
+seaborn
 pyarrow
 fastparquet
 openpyxl
+scikit-learn
+scipy
+statsmodels
+xgboost
+prophet
+torch
+optuna
+tqdm
+tslearn
+dtaidistance

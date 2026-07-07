@@ -1,0 +1,25 @@
+# Data (license / size)
+data/raw/
+data/processed/
+*.parquet
+*.csv
+!data/*.md
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+.env
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Outputs
+*.xlsx
+lightning_logs/
+outputs/
