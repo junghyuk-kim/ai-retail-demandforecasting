@@ -337,6 +337,22 @@ def summarize_phase1(phase1_df: pd.DataFrame) -> pd.DataFrame:
     return summary, best
 
 
+def build_global_embedding_cache(df: pd.DataFrame) -> dict[str, dict[tuple, np.ndarray]]:
+    """165개 전체 시계열에 대해 6종 임베딩을 1회만 계산 (Phase2 가속)."""
+    keys_df = df[["type", "family"]].drop_duplicates().sort_values(["type", "family"])
+    keys = list(zip(keys_df["type"], keys_df["family"]))
+    train_rows = []
+    for t, f in keys:
+        s = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAIN_WEEK_MAX)]["sales"].values
+        train_rows.append(s)
+    train_matrix = np.vstack(train_rows).astype(float)
+    cache: dict[str, dict[tuple, np.ndarray]] = {}
+    for emb_name, embed_fn in tqdm(EMBEDDERS.items(), desc="Global embeddings"):
+        emb_all = _fit_embedding(train_matrix, embed_fn)
+        cache[emb_name] = {keys[i]: emb_all[i] for i in range(len(keys))}
+    return cache
+
+
 def run_phase2_condition(
     df: pd.DataFrame,
     feat_df: pd.DataFrame,
@@ -346,6 +362,7 @@ def run_phase2_condition(
     cluster: int,
     best_model: str,
     embedding_name: str,
+    emb_cache: dict[str, dict[tuple, np.ndarray]] | None = None,
 ) -> pd.DataFrame:
     feature_cols = _feature_cols(feat_df)
     rows = []
@@ -358,22 +375,24 @@ def run_phase2_condition(
     if not series_list:
         return pd.DataFrame()
 
-    # Embedding on train sales matrix within condition
-    train_rows = []
-    keys = []
-    for t, f in series_list:
-        s = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAIN_WEEK_MAX)]["sales"].values
-        train_rows.append(s)
-        keys.append((t, f))
-    train_matrix = np.vstack(train_rows).astype(float)
-    embed_fn = EMBEDDERS[embedding_name]
-    emb_all = _fit_embedding(train_matrix, embed_fn)
-    emb_map = {keys[i]: emb_all[i] for i in range(len(keys))}
+    if emb_cache is not None:
+        emb_map = emb_cache[embedding_name]
+    else:
+        train_rows = []
+        keys = []
+        for t, f in series_list:
+            s = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAIN_WEEK_MAX)]["sales"].values
+            train_rows.append(s)
+            keys.append((t, f))
+        train_matrix = np.vstack(train_rows).astype(float)
+        emb_all = _fit_embedding(train_matrix, EMBEDDERS[embedding_name])
+        emb_map = {keys[i]: emb_all[i] for i in range(len(keys))}
 
     combo = f"{best_model}+{embedding_name}"
+    emb_dim = next(iter(emb_map.values())).shape[0]
 
     if best_model in PANEL_MODELS:
-        extra_cols = [f"emb_{i}" for i in range(emb_all.shape[1])]
+        extra_cols = [f"emb_{i}" for i in range(emb_dim)]
         train_cond = feat_df[
             (feat_df["type"] == typ)
             & (feat_df[cluster_col] == cluster)
@@ -445,6 +464,7 @@ def run_phase2_all(
     cluster_col: str,
     cluster_scheme: str,
     best_df: pd.DataFrame,
+    emb_cache: dict[str, dict[tuple, np.ndarray]] | None = None,
 ) -> pd.DataFrame:
     parts = []
     sub_best = best_df[best_df["cluster_scheme"] == cluster_scheme]
@@ -455,7 +475,15 @@ def run_phase2_all(
 
     for typ, cluster, best_model, emb in tqdm(tasks, desc=f"Phase2 {cluster_scheme}"):
         part = run_phase2_condition(
-            df, feat_df, cluster_scheme, cluster_col, typ, cluster, best_model, emb
+            df,
+            feat_df,
+            cluster_scheme,
+            cluster_col,
+            typ,
+            cluster,
+            best_model,
+            emb,
+            emb_cache=emb_cache,
         )
         if not part.empty:
             parts.append(part)
