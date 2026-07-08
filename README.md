@@ -79,7 +79,7 @@ SBC (ADI·CV² rule-base 4클러스터)
 ```
 02 전처리 → 03 피처 → 04 패턴개요 → 05 SBC → 06 ML클러스터링
     → 07 통계 → 08 ML → 09 DL → 10 임베딩 → 11 하이브리드 → 12 RIDR
-    → 13 변수중요도 → 14 Optuna(예정)
+    → 13 변수중요도 → 14 Optuna
 ```
 
 | 장 | 파일 | 하는 일 | 이유 |
@@ -96,7 +96,7 @@ SBC (ADI·CV² rule-base 4클러스터)
 | 11 | `11_하이브리드_수요예측.ipynb` | type별 **가중 WMAPE** SBC vs ML | **어느 clustering scheme이 유리한지** 최종 비교 |
 | 12 | `12_제품_수요패턴_RIDR_분석.ipynb` | CV·RIDR·수요 밴드, 11장 연계 | scheme 차이의 **변동성 근거** (논문 3장 스타일) |
 | 13 | `13_변수_중요도_분석.ipynb` | type별 **XGBoost 변수 중요도** | lag·외생변수 등 **어떤 피처가 예측에 기여하는지** |
-| 14 | `14_Optuna_튜닝.ipynb` *(예정)* | type별 XGBoost **Optuna** 튜닝 | validation MAPE 기준 하이퍼파라미터 자동 탐색 |
+| 14 | `14_Optuna_튜닝.ipynb` | type별 XGBoost **Optuna** 튜닝 | validation MAPE 기준 하이퍼파라미터 자동 탐색 |
 
 ### 실험 조건 (07–10)
 
@@ -116,7 +116,7 @@ SBC (ADI·CV² rule-base 4클러스터)
 ```
 ai-retail-demandforecasting/
 ├── code/
-│   ├── 02~14_*.ipynb          # 실습 노트북 (13 변수중요도, 14 Optuna 예정)
+│   ├── 02~14_*.ipynb          # 실습 노트북 (13 변수중요도, 14 Optuna)
 │   ├── execute_notebook.py    # 노트북 일괄 실행·nbformat 수정
 │   ├── build_phase_notebooks.py  # 07–11 노트북 템플릿 생성
 │   ├── run_phase2_pipeline.py    # 10장 Phase2 CLI 실행(선택)
@@ -172,6 +172,7 @@ ai-retail-demandforecasting/
 | `phase_experiments.py` | **Phase1/2 실험 엔진**: 40조건 루프, 4지표 저장, XGBoost 고정 Phase2, 전역 임베딩 캐시 |
 | `phase_analysis.py` | 11장 **가중 WMAPE**, type별 SBC vs ML 비교, CV 연계표 |
 | `feature_importance.py` | 13장 type별 **XGBoost feature importance** |
+| `hyperparameter_tuning.py` | 14장 type별 **Optuna XGBoost 튜닝**, baseline vs tuned MAPE |
 
 ### `phase_experiments.py` 핵심 흐름
 
@@ -212,7 +213,7 @@ Python 3.10+, Jupyter. GPU 있으면 DL·임베딩·XGBoost 가속. 자세한 �
 4. `11` (SBC vs ML 가중 WMAPE)
 5. `12` (RIDR·변동성 근거) — `04`는 선택적 개요
 6. `13` (XGBoost 변수 중요도)
-7. `14` Optuna 튜닝 *(예정)*
+7. `14` (Optuna 하이퍼파라미터 튜닝)
 
 ### 3. 노트북 CLI 실행 (선택)
 
