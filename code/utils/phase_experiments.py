@@ -17,21 +17,15 @@ from .forecasting import (
     forecast_prophet,
 )
 from .intermittent import forecast_sba, forecast_tsb
-from .metrics import wmape
+from .metrics import FORECAST_METRICS, forecast_metrics, wmape
 from .splits import TRAIN_WEEK_MAX, VAL_WEEKS
 
-PHASE1_MODELS = [
-    "ARIMA",
-    "Prophet",
-    "SBA",
-    "TSB",
-    "RF",
-    "XGBoost",
-    "LSTM",
-    "Autoformer",
-    "N-HiTS",
-    "iTransformer",
-]
+STAT_MODELS = ["ARIMA", "Prophet", "SBA", "TSB"]
+ML_MODELS = ["RF", "XGBoost"]
+DL_MODELS = ["LSTM", "Autoformer", "N-HiTS", "iTransformer"]
+
+PHASE1_MODELS = STAT_MODELS + ML_MODELS + DL_MODELS
+RANK_METRIC = "mape"  # 조건별 Best 선정 기준 (MAE/RMSE/MAPE/MASE 중)
 
 EMBEDDING_NAMES = list(EMBEDDERS.keys())
 LOOKBACK = 16
@@ -211,6 +205,13 @@ def forecast_one_series(
     return pred
 
 
+def _metrics_row(base: dict, y_true, y_pred, y_train) -> dict:
+    row = dict(base)
+    row.update(forecast_metrics(y_true, y_pred, y_train))
+    row["wmape"] = wmape(y_true, y_pred)  # 11장 SBC vs ML 비교용 (Best 선정에는 미사용)
+    return row
+
+
 def run_phase1_condition(
     df: pd.DataFrame,
     feat_df: pd.DataFrame,
@@ -273,19 +274,24 @@ def run_phase1_condition(
         if g_val.empty:
             continue
         y_true = g_val["sales"].values
+        y_train = g_train["sales"].values
 
         for model in series_models:
             pred = forecast_one_series(model, g_train, g_val, feature_cols)
             rows.append(
-                {
-                    "phase": 1,
-                    "cluster_scheme": cluster_scheme,
-                    "type": typ2,
-                    "cluster": cluster,
-                    "family": fam,
-                    "model": model,
-                    "wmape": wmape(y_true, pred),
-                }
+                _metrics_row(
+                    {
+                        "phase": 1,
+                        "cluster_scheme": cluster_scheme,
+                        "type": typ2,
+                        "cluster": cluster,
+                        "family": fam,
+                        "model": model,
+                    },
+                    y_true,
+                    pred,
+                    y_train,
+                )
             )
 
         for model in panel_models:
@@ -293,15 +299,19 @@ def run_phase1_condition(
             if pred is None or len(pred) != len(y_true):
                 pred = np.zeros(len(y_true))
             rows.append(
-                {
-                    "phase": 1,
-                    "cluster_scheme": cluster_scheme,
-                    "type": typ2,
-                    "cluster": cluster,
-                    "family": fam,
-                    "model": model,
-                    "wmape": wmape(y_true, pred),
-                }
+                _metrics_row(
+                    {
+                        "phase": 1,
+                        "cluster_scheme": cluster_scheme,
+                        "type": typ2,
+                        "cluster": cluster,
+                        "family": fam,
+                        "model": model,
+                    },
+                    y_true,
+                    pred,
+                    y_train,
+                )
             )
 
     return pd.DataFrame(rows)
@@ -312,28 +322,52 @@ def run_phase1_all(
     feat_df: pd.DataFrame,
     cluster_col: str,
     cluster_scheme: str,
+    models: list[str] | None = None,
 ) -> pd.DataFrame:
+    models = models or PHASE1_MODELS
     types = sorted(df["type"].unique())
     conditions = build_conditions(types)
     parts = []
     for row in tqdm(conditions.itertuples(index=False), total=len(conditions), desc=f"Phase1 {cluster_scheme}"):
         part = run_phase1_condition(
-            df, feat_df, cluster_scheme, cluster_col, row.type, int(row.cluster)
+            df, feat_df, cluster_scheme, cluster_col, row.type, int(row.cluster), models=models
         )
         if not part.empty:
             parts.append(part)
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
-def summarize_phase1(phase1_df: pd.DataFrame) -> pd.DataFrame:
-    summary = (
-        phase1_df.groupby(["cluster_scheme", "type", "cluster", "model"], as_index=False)["wmape"]
-        .mean()
-        .rename(columns={"wmape": "wmape_mean"})
-    )
-    idx = summary.groupby(["cluster_scheme", "type", "cluster"])["wmape_mean"].idxmin()
+def _summarize_by_metric(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    rank_metric: str = RANK_METRIC,
+    model_col: str = "model",
+):
+    condition_cols = ["cluster_scheme", "type", "cluster"]
+    agg = {m: "mean" for m in FORECAST_METRICS}
+    summary = df.groupby(group_cols, as_index=False).agg(agg)
+    summary = summary.rename(columns={m: f"{m}_mean" for m in FORECAST_METRICS})
+    idx = summary.groupby(condition_cols)[f"{rank_metric}_mean"].idxmin()
     best = summary.loc[idx].copy()
-    best = best.rename(columns={"model": "best_model", "wmape_mean": "best_wmape"})
+    rename = {model_col: "best_model", f"{rank_metric}_mean": f"best_{rank_metric}"}
+    best = best.rename(columns=rename)
+    return summary, best
+
+
+def summarize_phase1(phase1_df: pd.DataFrame, rank_metric: str = RANK_METRIC) -> tuple[pd.DataFrame, pd.DataFrame]:
+    group_cols = ["cluster_scheme", "type", "cluster", "model"]
+    return _summarize_by_metric(phase1_df, group_cols, rank_metric)
+
+
+def merge_phase1_best(
+    stat_df: pd.DataFrame,
+    ml_df: pd.DataFrame,
+    dl_df: pd.DataFrame,
+    rank_metric: str = RANK_METRIC,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """07·08·09 결과를 합쳐 40조건×10모델 중 Best 선정."""
+    combined = pd.concat([stat_df, ml_df, dl_df], ignore_index=True)
+    summary, best = summarize_phase1(combined, rank_metric=rank_metric)
     return summary, best
 
 
@@ -416,18 +450,24 @@ def run_phase2_condition(
         for (t, f), g in val_cond.groupby(["type", "family"]):
             g_val = g.sort_values("yearweek")
             y_true = g_val["sales"].values
+            g_train = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAIN_WEEK_MAX)]
+            y_train = g_train["sales"].values
             rows.append(
-                {
-                    "phase": 2,
-                    "cluster_scheme": cluster_scheme,
-                    "type": t,
-                    "cluster": cluster,
-                    "family": f,
-                    "model": combo,
-                    "base_model": best_model,
-                    "embedding": embedding_name,
-                    "wmape": wmape(y_true, g_val["pred"].values),
-                }
+                _metrics_row(
+                    {
+                        "phase": 2,
+                        "cluster_scheme": cluster_scheme,
+                        "type": t,
+                        "cluster": cluster,
+                        "family": f,
+                        "model": combo,
+                        "base_model": best_model,
+                        "embedding": embedding_name,
+                    },
+                    y_true,
+                    g_val["pred"].values,
+                    y_train,
+                )
             )
         return pd.DataFrame(rows)
 
@@ -438,22 +478,27 @@ def run_phase2_condition(
         if g_val.empty:
             continue
         y_true = g_val["sales"].values
+        y_train = g_train["sales"].values
         emb = emb_map[(t, f)]
         pred = forecast_one_series(
             best_model, g_train, g_val, feature_cols, embedding=emb, hybrid=True
         )
         rows.append(
-            {
-                "phase": 2,
-                "cluster_scheme": cluster_scheme,
-                "type": t,
-                "cluster": cluster,
-                "family": f,
-                "model": combo,
-                "base_model": best_model,
-                "embedding": embedding_name,
-                "wmape": wmape(y_true, pred),
-            }
+            _metrics_row(
+                {
+                    "phase": 2,
+                    "cluster_scheme": cluster_scheme,
+                    "type": t,
+                    "cluster": cluster,
+                    "family": f,
+                    "model": combo,
+                    "base_model": best_model,
+                    "embedding": embedding_name,
+                },
+                y_true,
+                pred,
+                y_train,
+            )
         )
     return pd.DataFrame(rows)
 
@@ -490,16 +535,51 @@ def run_phase2_all(
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
-def summarize_phase2(phase2_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    summary = (
-        phase2_df.groupby(
-            ["cluster_scheme", "type", "cluster", "model", "base_model", "embedding"],
-            as_index=False,
-        )["wmape"]
-        .mean()
-        .rename(columns={"wmape": "wmape_mean"})
-    )
-    idx = summary.groupby(["cluster_scheme", "type", "cluster"])["wmape_mean"].idxmin()
-    best = summary.loc[idx].copy()
-    best = best.rename(columns={"model": "best_hybrid", "wmape_mean": "best_wmape"})
+def summarize_phase2(
+    phase2_df: pd.DataFrame, rank_metric: str = RANK_METRIC
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    group_cols = ["cluster_scheme", "type", "cluster", "model", "base_model", "embedding"]
+    summary, best = _summarize_by_metric(phase2_df, group_cols, rank_metric, model_col="model")
+    best = best.rename(columns={"best_model": "best_hybrid", f"best_{rank_metric}": f"best_{rank_metric}"})
     return summary, best
+
+
+def pick_final_per_condition(
+    phase1_best: pd.DataFrame,
+    phase2_best: pd.DataFrame,
+    rank_metric: str = RANK_METRIC,
+) -> pd.DataFrame:
+    """조건별 Phase1 vs Phase2 — rank_metric(기본 MAPE) 기준 최종 모델."""
+    rows = []
+    for row in phase1_best.itertuples(index=False):
+        p1_score = getattr(row, f"best_{rank_metric}")
+        p2_row = phase2_best[
+            (phase2_best["cluster_scheme"] == row.cluster_scheme)
+            & (phase2_best["type"] == row.type)
+            & (phase2_best["cluster"] == row.cluster)
+        ]
+        if p2_row.empty:
+            continue
+        p2 = p2_row.iloc[0]
+        p2_score = p2[f"best_{rank_metric}"]
+        if p2_score < p1_score:
+            winner, model, score = "Phase2", p2["best_hybrid"], p2_score
+            p2_model = p2["best_hybrid"]
+        else:
+            winner, model, score = "Phase1", row.best_model, p1_score
+            p2_model = p2["best_hybrid"]
+        rows.append(
+            {
+                "cluster_scheme": row.cluster_scheme,
+                "type": row.type,
+                "cluster": row.cluster,
+                "winner": winner,
+                "final_model": model,
+                rank_metric: score,
+                "phase1_best": row.best_model,
+                f"phase1_{rank_metric}": p1_score,
+                "phase2_best": p2_model,
+                f"phase2_{rank_metric}": p2_score,
+            }
+        )
+    return pd.DataFrame(rows)

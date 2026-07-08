@@ -37,18 +37,20 @@ def _pick_detail(
     phase2_model: str,
 ) -> pd.DataFrame:
     if winner == "Phase2":
-        return phase2[
+        mask = (
             (phase2["cluster_scheme"] == scheme)
             & (phase2["type"] == typ)
             & (phase2["cluster"] == cluster)
             & (phase2["model"] == phase2_model)
-        ]
-    return phase1[
+        )
+        return phase2[mask]
+    mask = (
         (phase1["cluster_scheme"] == scheme)
         & (phase1["type"] == typ)
         & (phase1["cluster"] == cluster)
         & (phase1["model"] == phase1_model)
-    ]
+    )
+    return phase1[mask]
 
 
 def build_family_final_results(
@@ -57,9 +59,10 @@ def build_family_final_results(
     final_best: pd.DataFrame,
     weights: pd.DataFrame,
 ) -> pd.DataFrame:
-    """조건별 최종 모델의 제품(family) 단위 WMAPE + 가중치."""
+    """조건별 최종 모델의 제품(family) 단위 지표 + WMAPE 가중치."""
     parts = []
     for row in final_best.itertuples(index=False):
+        p2_model = row.phase2_best
         detail = _pick_detail(
             phase1,
             phase2,
@@ -68,7 +71,7 @@ def build_family_final_results(
             int(row.cluster),
             row.winner,
             row.phase1_best,
-            row.phase2_best,
+            p2_model,
         )
         if detail.empty:
             continue
