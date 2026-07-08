@@ -15,15 +15,19 @@ def _set_torch_seed(seed: int = 42) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _loader(ds, batch_size: int, shuffle: bool = True):
     import torch
     from torch.utils.data import DataLoader
 
+    pin = torch.cuda.is_available()
+    bs = batch_size * (2 if pin else 1)
     g = torch.Generator()
     g.manual_seed(42)
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, generator=g)
+    return DataLoader(ds, batch_size=bs, shuffle=shuffle, generator=g, pin_memory=pin)
 
 
 def embed_pca(X: np.ndarray, n_components: int = 10) -> np.ndarray:
@@ -79,8 +83,11 @@ def embed_autoencoder(X: np.ndarray, n_components: int = 10, epochs: int = 80) -
     import torch.nn as nn
     from torch.utils.data import TensorDataset
 
+    from .device import get_torch_device
+
     _set_torch_seed()
-    device = torch.device("cpu")
+    device = get_torch_device()
+    pin = device.type == "cuda"
     Xs = StandardScaler().fit_transform(X).astype(np.float32)
     tensor = torch.tensor(Xs)
     ds = TensorDataset(tensor)
@@ -103,7 +110,7 @@ def embed_autoencoder(X: np.ndarray, n_components: int = 10, epochs: int = 80) -
     model.train()
     for _ in range(epochs):
         for (batch,) in loader:
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=pin)
             opt.zero_grad()
             recon, _ = model(batch)
             loss = loss_fn(recon, batch)
@@ -111,7 +118,7 @@ def embed_autoencoder(X: np.ndarray, n_components: int = 10, epochs: int = 80) -
             opt.step()
     model.eval()
     with torch.no_grad():
-        _, z = model(torch.tensor(Xs).to(device))
+        _, z = model(torch.tensor(Xs).to(device, non_blocking=pin))
     return z.cpu().numpy()
 
 
@@ -130,7 +137,10 @@ def embed_gaf_cnn(X: np.ndarray, n_components: int = 10, epochs: int = 60) -> np
     gaf = GramianAngularField(image_size=min(32, X.shape[1]))
     imgs = gaf.fit_transform(StandardScaler().fit_transform(X)).astype(np.float32)
     imgs = imgs[:, None, :, :]
-    device = torch.device("cpu")
+    from .device import get_torch_device
+
+    device = get_torch_device()
+    pin = device.type == "cuda"
 
     class GAFCNN(nn.Module):
         def __init__(self, latent: int):
@@ -152,7 +162,7 @@ def embed_gaf_cnn(X: np.ndarray, n_components: int = 10, epochs: int = 60) -> np
     model.train()
     for _ in range(epochs):
         for (batch,) in loader:
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=pin)
             opt.zero_grad()
             z = model(batch)
             loss = (z ** 2).mean()
@@ -160,7 +170,7 @@ def embed_gaf_cnn(X: np.ndarray, n_components: int = 10, epochs: int = 60) -> np
             opt.step()
     model.eval()
     with torch.no_grad():
-        z = model(torch.tensor(imgs).to(device))
+        z = model(torch.tensor(imgs).to(device, non_blocking=pin))
     return z.cpu().numpy()
 
 
@@ -169,8 +179,11 @@ def embed_ts2vec(X: np.ndarray, n_components: int = 10, epochs: int = 80) -> np.
     import torch.nn as nn
     from torch.utils.data import TensorDataset
 
+    from .device import get_torch_device
+
     _set_torch_seed()
-    device = torch.device("cpu")
+    device = get_torch_device()
+    pin = device.type == "cuda"
     Xs = StandardScaler().fit_transform(X).astype(np.float32)
     t = torch.tensor(Xs)
 
@@ -193,7 +206,7 @@ def embed_ts2vec(X: np.ndarray, n_components: int = 10, epochs: int = 80) -> np.
     enc.train()
     for _ in range(epochs):
         for (batch,) in loader:
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=pin)
             noise = batch + 0.05 * torch.randn_like(batch)
             opt.zero_grad()
             z1 = enc(batch)
@@ -203,7 +216,7 @@ def embed_ts2vec(X: np.ndarray, n_components: int = 10, epochs: int = 80) -> np.
             opt.step()
     enc.eval()
     with torch.no_grad():
-        return enc(t.to(device)).cpu().numpy()
+        return enc(t.to(device, non_blocking=pin)).cpu().numpy()
 
 
 def embed_patchtst(X: np.ndarray, n_components: int = 10, patch_len: int = 8, epochs: int = 80) -> np.ndarray:
@@ -211,8 +224,11 @@ def embed_patchtst(X: np.ndarray, n_components: int = 10, patch_len: int = 8, ep
     import torch.nn as nn
     from torch.utils.data import TensorDataset
 
+    from .device import get_torch_device
+
     _set_torch_seed()
-    device = torch.device("cpu")
+    device = get_torch_device()
+    pin = device.type == "cuda"
     Xs = StandardScaler().fit_transform(X).astype(np.float32)
     seq_len = Xs.shape[1]
     patch_len = min(patch_len, seq_len)
@@ -226,7 +242,10 @@ def embed_patchtst(X: np.ndarray, n_components: int = 10, patch_len: int = 8, ep
         def __init__(self):
             super().__init__()
             self.proj = nn.Linear(patch_len, n_components)
-            enc_layer = nn.TransformerEncoderLayer(d_model=n_components, nhead=2, batch_first=True)
+            nhead = 2 if n_components % 2 == 0 else 1
+            enc_layer = nn.TransformerEncoderLayer(
+                d_model=n_components, nhead=nhead, batch_first=True
+            )
             self.encoder = nn.TransformerEncoder(enc_layer, num_layers=2)
 
         def forward(self, x):
@@ -241,7 +260,7 @@ def embed_patchtst(X: np.ndarray, n_components: int = 10, patch_len: int = 8, ep
     model.train()
     for _ in range(epochs):
         for (batch,) in loader:
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=pin)
             opt.zero_grad()
             z = model(batch)
             loss = (z ** 2).mean()
@@ -249,7 +268,7 @@ def embed_patchtst(X: np.ndarray, n_components: int = 10, patch_len: int = 8, ep
             opt.step()
     model.eval()
     with torch.no_grad():
-        return model(t.to(device)).cpu().numpy()
+        return model(t.to(device, non_blocking=pin)).cpu().numpy()
 
 
 EMBEDDERS = {

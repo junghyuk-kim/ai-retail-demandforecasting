@@ -1,0 +1,477 @@
+"""Phase 1 / Phase 2 forecasting experiments (40 conditions x 10 algos)."""
+from __future__ import annotations
+
+import warnings
+from typing import Callable
+
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+
+from .dl_models import train_dl_forecaster
+from .embeddings import EMBEDDERS
+from .forecasting import (
+    FORECASTERS,
+    forecast_arima,
+    forecast_ml_panel,
+    forecast_prophet,
+)
+from .intermittent import forecast_sba, forecast_tsb
+from .metrics import wmape
+from .splits import TRAIN_WEEK_MAX, VAL_WEEKS
+
+PHASE1_MODELS = [
+    "ARIMA",
+    "Prophet",
+    "SBA",
+    "TSB",
+    "RF",
+    "XGBoost",
+    "LSTM",
+    "Autoformer",
+    "N-HiTS",
+    "iTransformer",
+]
+
+EMBEDDING_NAMES = list(EMBEDDERS.keys())
+LOOKBACK = 16
+try:
+    import torch
+
+    DL_EPOCHS = 80 if torch.cuda.is_available() else 40
+except Exception:
+    DL_EPOCHS = 40
+N_EMB_DIM = 10
+
+SERIES_MODELS = {"ARIMA", "Prophet", "SBA", "TSB", "LSTM", "Autoformer", "N-HiTS", "iTransformer"}
+PANEL_MODELS = {"RF", "XGBoost"}
+
+
+def _horizon() -> int:
+    return len(VAL_WEEKS)
+
+
+def build_conditions(types: list, clusters: list[int] = (1, 2, 3, 4)) -> pd.DataFrame:
+    rows = [
+        {"type": t, "cluster": c}
+        for t in types
+        for c in clusters
+    ]
+    return pd.DataFrame(rows)
+
+
+def _feature_cols(df: pd.DataFrame) -> list[str]:
+    exclude = {"sales", "type", "family", "year", "week", "yearweek", "split"}
+    return [c for c in df.columns if c not in exclude and pd.api.types.is_numeric_dtype(df[c])]
+
+
+def _attach_embeddings(df: pd.DataFrame, emb_map: dict[tuple, np.ndarray], prefix: str = "emb") -> pd.DataFrame:
+    out = df.copy()
+    dim = next(iter(emb_map.values())).shape[0]
+    for i in range(dim):
+        out[f"{prefix}_{i}"] = out.apply(lambda r: emb_map[(r["type"], r["family"])][i], axis=1)
+    return out
+
+
+def _fit_embedding(train_matrix: np.ndarray, embed_fn: Callable, n_components: int = N_EMB_DIM) -> np.ndarray:
+    from .embeddings import embed_pca
+
+    n = train_matrix.shape[0]
+    if n < 3:
+        d = min(n_components, max(n - 1, 1))
+        return embed_pca(train_matrix, n_components=d)
+    d = min(n_components, n - 1, train_matrix.shape[1])
+    d = max(d, 2)
+    if d % 2 != 0:
+        d = max(d - 1, 2)
+    d = min(d, n - 1)
+    try:
+        return embed_fn(train_matrix, n_components=d)
+    except Exception:
+        return embed_pca(train_matrix, n_components=min(d, n - 1))
+
+
+def _forecast_stat(
+    model: str,
+    weeks: pd.Series,
+    sales: pd.Series,
+    horizon: int,
+    exog: np.ndarray | None = None,
+) -> np.ndarray:
+    y = sales.astype(float).values
+    if model == "Prophet":
+        return forecast_prophet(weeks, sales, horizon)
+    if model == "ARIMA" and exog is not None and len(y) >= 8:
+        try:
+            from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+            ex = np.asarray(exog, dtype=float)
+            if ex.ndim == 1:
+                ex = ex.reshape(-1, 1)
+            ex_f = np.tile(ex[-1:], (horizon, 1)) if len(ex) else None
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                fit = SARIMAX(
+                    y,
+                    exog=ex,
+                    order=(1, 0, 1),
+                    seasonal_order=(0, 0, 0, 0),
+                    enforce_stationarity=False,
+                    enforce_invertibility=False,
+                ).fit(disp=False)
+                pred = fit.forecast(horizon, exog=ex_f)
+            return np.maximum(np.asarray(pred, dtype=float), 0.0)
+        except Exception:
+            pass
+    if model == "ARIMA":
+        return forecast_arima(sales, horizon)
+    if model == "SBA":
+        return forecast_sba(sales, horizon)
+    if model == "TSB":
+        return forecast_tsb(sales, horizon)
+    return forecast_arima(sales, horizon)
+
+
+def _hybrid_residual_adjust(
+    train_sales: pd.Series,
+    train_weeks: pd.Series,
+    base_model: str,
+    embedding: np.ndarray,
+    horizon: int,
+) -> Callable[[np.ndarray], np.ndarray]:
+    """Train embedding -> residual correction on in-sample base forecast."""
+    from sklearn.linear_model import Ridge
+
+    y = train_sales.astype(float).values
+    if len(y) < horizon + 5:
+        return lambda pred: pred
+    preds, actuals, embs = [], [], []
+    for i in range(horizon, len(y)):
+        sub_w = train_weeks.iloc[:i]
+        sub_s = train_sales.iloc[:i]
+        p = _forecast_stat(base_model, sub_w, sub_s, horizon=1)[0]
+        preds.append(p)
+        actuals.append(y[i])
+        embs.append(embedding)
+    if len(preds) < 5:
+        return lambda pred: pred
+    resid = np.array(actuals) - np.array(preds)
+    reg = Ridge(alpha=1.0).fit(np.array(embs), resid)
+    return lambda pred: pred + reg.predict(embedding.reshape(1, -1))[0]
+
+
+def forecast_one_series(
+    model: str,
+    g_train: pd.DataFrame,
+    g_val: pd.DataFrame,
+    feature_cols: list[str],
+    lookback: int = LOOKBACK,
+    embedding: np.ndarray | None = None,
+    hybrid: bool = False,
+) -> np.ndarray:
+    horizon = len(g_val)
+    weeks = g_train["yearweek"]
+    sales = g_train["sales"]
+
+    if model in PANEL_MODELS:
+        return np.array([])  # panel handled separately
+
+    if model in {"LSTM", "Autoformer", "N-HiTS", "iTransformer"}:
+        from .dl_models import (
+            AutoformerLite,
+            ITransformerLite,
+            LSTMForecaster,
+            NHITSBlock,
+            train_dl_forecaster,
+        )
+
+        cls_map = {
+            "LSTM": LSTMForecaster,
+            "Autoformer": AutoformerLite,
+            "N-HiTS": NHITSBlock,
+            "iTransformer": ITransformerLite,
+        }
+        pred = train_dl_forecaster(
+            sales.astype(float).values, lookback, horizon, cls_map[model], epochs=DL_EPOCHS
+        )
+        if hybrid and embedding is not None:
+            scale = 1.0 + 0.05 * np.tanh(float(embedding.mean()))
+            pred = pred * scale
+        return pred
+
+    exog = embedding if hybrid and embedding is not None else None
+    pred = _forecast_stat(model, weeks, sales, horizon, exog=exog)
+
+    if hybrid and embedding is not None and model in {"SBA", "TSB", "Prophet"}:
+        adj = _hybrid_residual_adjust(sales, weeks, model, embedding, horizon)
+        pred = adj(pred)
+
+    if len(pred) != horizon:
+        pred = np.resize(pred, horizon)
+    return pred
+
+
+def run_phase1_condition(
+    df: pd.DataFrame,
+    feat_df: pd.DataFrame,
+    cluster_scheme: str,
+    cluster_col: str,
+    typ: str,
+    cluster: int,
+    models: list[str] | None = None,
+) -> pd.DataFrame:
+    models = models or PHASE1_MODELS
+    feature_cols = _feature_cols(feat_df)
+    horizon = _horizon()
+    rows = []
+
+    series_keys = (
+        df[(df["type"] == typ) & (df[cluster_col] == cluster)][["type", "family"]]
+        .drop_duplicates()
+        .itertuples(index=False, name=None)
+    )
+    series_list = list(series_keys)
+    if not series_list:
+        return pd.DataFrame()
+
+    panel_models = [m for m in models if m in PANEL_MODELS]
+    series_models = [m for m in models if m in SERIES_MODELS]
+
+    # Panel ML: train once per condition
+    panel_preds: dict[str, dict[tuple, np.ndarray]] = {m: {} for m in panel_models}
+    if panel_models:
+        keys_set = set(series_list)
+        train_cond = feat_df[
+            (feat_df["type"] == typ)
+            & (feat_df[cluster_col] == cluster)
+            & (feat_df["yearweek"] <= TRAIN_WEEK_MAX)
+        ].dropna(subset=feature_cols)
+        val_cond = feat_df[
+            (feat_df["type"] == typ)
+            & (feat_df[cluster_col] == cluster)
+            & (feat_df["yearweek"].isin(VAL_WEEKS))
+        ].copy()
+        for pm in panel_models:
+            if train_cond.empty or val_cond.empty:
+                continue
+            pred_all = forecast_ml_panel(
+                train_cond,
+                val_cond,
+                feature_cols,
+                model_name="rf" if pm == "RF" else "xgboost",
+            )
+            val_cond = val_cond.copy()
+            val_cond["pred"] = pred_all
+            for (t, f), g in val_cond.groupby(["type", "family"]):
+                if (t, f) in keys_set:
+                    panel_preds[pm][(t, f)] = g.sort_values("yearweek")["pred"].values
+
+    for typ2, fam in series_list:
+        g = df[(df["type"] == typ2) & (df["family"] == fam)]
+        g_train = g[g["yearweek"] <= TRAIN_WEEK_MAX]
+        g_val = g[g["yearweek"].isin(VAL_WEEKS)].sort_values("yearweek")
+        if g_val.empty:
+            continue
+        y_true = g_val["sales"].values
+
+        for model in series_models:
+            pred = forecast_one_series(model, g_train, g_val, feature_cols)
+            rows.append(
+                {
+                    "phase": 1,
+                    "cluster_scheme": cluster_scheme,
+                    "type": typ2,
+                    "cluster": cluster,
+                    "family": fam,
+                    "model": model,
+                    "wmape": wmape(y_true, pred),
+                }
+            )
+
+        for model in panel_models:
+            pred = panel_preds.get(model, {}).get((typ2, fam))
+            if pred is None or len(pred) != len(y_true):
+                pred = np.zeros(len(y_true))
+            rows.append(
+                {
+                    "phase": 1,
+                    "cluster_scheme": cluster_scheme,
+                    "type": typ2,
+                    "cluster": cluster,
+                    "family": fam,
+                    "model": model,
+                    "wmape": wmape(y_true, pred),
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def run_phase1_all(
+    df: pd.DataFrame,
+    feat_df: pd.DataFrame,
+    cluster_col: str,
+    cluster_scheme: str,
+) -> pd.DataFrame:
+    types = sorted(df["type"].unique())
+    conditions = build_conditions(types)
+    parts = []
+    for row in tqdm(conditions.itertuples(index=False), total=len(conditions), desc=f"Phase1 {cluster_scheme}"):
+        part = run_phase1_condition(
+            df, feat_df, cluster_scheme, cluster_col, row.type, int(row.cluster)
+        )
+        if not part.empty:
+            parts.append(part)
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+def summarize_phase1(phase1_df: pd.DataFrame) -> pd.DataFrame:
+    summary = (
+        phase1_df.groupby(["cluster_scheme", "type", "cluster", "model"], as_index=False)["wmape"]
+        .mean()
+        .rename(columns={"wmape": "wmape_mean"})
+    )
+    idx = summary.groupby(["cluster_scheme", "type", "cluster"])["wmape_mean"].idxmin()
+    best = summary.loc[idx].copy()
+    best = best.rename(columns={"model": "best_model", "wmape_mean": "best_wmape"})
+    return summary, best
+
+
+def run_phase2_condition(
+    df: pd.DataFrame,
+    feat_df: pd.DataFrame,
+    cluster_scheme: str,
+    cluster_col: str,
+    typ: str,
+    cluster: int,
+    best_model: str,
+    embedding_name: str,
+) -> pd.DataFrame:
+    feature_cols = _feature_cols(feat_df)
+    rows = []
+    series_list = (
+        df[(df["type"] == typ) & (df[cluster_col] == cluster)][["type", "family"]]
+        .drop_duplicates()
+        .values
+        .tolist()
+    )
+    if not series_list:
+        return pd.DataFrame()
+
+    # Embedding on train sales matrix within condition
+    train_rows = []
+    keys = []
+    for t, f in series_list:
+        s = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAIN_WEEK_MAX)]["sales"].values
+        train_rows.append(s)
+        keys.append((t, f))
+    train_matrix = np.vstack(train_rows).astype(float)
+    embed_fn = EMBEDDERS[embedding_name]
+    emb_all = _fit_embedding(train_matrix, embed_fn)
+    emb_map = {keys[i]: emb_all[i] for i in range(len(keys))}
+
+    combo = f"{best_model}+{embedding_name}"
+
+    if best_model in PANEL_MODELS:
+        extra_cols = [f"emb_{i}" for i in range(emb_all.shape[1])]
+        train_cond = feat_df[
+            (feat_df["type"] == typ)
+            & (feat_df[cluster_col] == cluster)
+            & (feat_df["yearweek"] <= TRAIN_WEEK_MAX)
+        ].dropna(subset=feature_cols)
+        val_cond = feat_df[
+            (feat_df["type"] == typ)
+            & (feat_df[cluster_col] == cluster)
+            & (feat_df["yearweek"].isin(VAL_WEEKS))
+        ].copy()
+        train_cond = _attach_embeddings(train_cond, emb_map)
+        val_cond = _attach_embeddings(val_cond, emb_map)
+        feat_hybrid = feature_cols + extra_cols
+        pred_all = forecast_ml_panel(
+            train_cond,
+            val_cond,
+            feat_hybrid,
+            model_name="rf" if best_model == "RF" else "xgboost",
+        )
+        val_cond["pred"] = pred_all
+        for (t, f), g in val_cond.groupby(["type", "family"]):
+            g_val = g.sort_values("yearweek")
+            y_true = g_val["sales"].values
+            rows.append(
+                {
+                    "phase": 2,
+                    "cluster_scheme": cluster_scheme,
+                    "type": t,
+                    "cluster": cluster,
+                    "family": f,
+                    "model": combo,
+                    "base_model": best_model,
+                    "embedding": embedding_name,
+                    "wmape": wmape(y_true, g_val["pred"].values),
+                }
+            )
+        return pd.DataFrame(rows)
+
+    for t, f in series_list:
+        g = df[(df["type"] == t) & (df["family"] == f)]
+        g_train = g[g["yearweek"] <= TRAIN_WEEK_MAX]
+        g_val = g[g["yearweek"].isin(VAL_WEEKS)].sort_values("yearweek")
+        if g_val.empty:
+            continue
+        y_true = g_val["sales"].values
+        emb = emb_map[(t, f)]
+        pred = forecast_one_series(
+            best_model, g_train, g_val, feature_cols, embedding=emb, hybrid=True
+        )
+        rows.append(
+            {
+                "phase": 2,
+                "cluster_scheme": cluster_scheme,
+                "type": t,
+                "cluster": cluster,
+                "family": f,
+                "model": combo,
+                "base_model": best_model,
+                "embedding": embedding_name,
+                "wmape": wmape(y_true, pred),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def run_phase2_all(
+    df: pd.DataFrame,
+    feat_df: pd.DataFrame,
+    cluster_col: str,
+    cluster_scheme: str,
+    best_df: pd.DataFrame,
+) -> pd.DataFrame:
+    parts = []
+    sub_best = best_df[best_df["cluster_scheme"] == cluster_scheme]
+    tasks = []
+    for row in sub_best.itertuples(index=False):
+        for emb in EMBEDDING_NAMES:
+            tasks.append((row.type, int(row.cluster), row.best_model, emb))
+
+    for typ, cluster, best_model, emb in tqdm(tasks, desc=f"Phase2 {cluster_scheme}"):
+        part = run_phase2_condition(
+            df, feat_df, cluster_scheme, cluster_col, typ, cluster, best_model, emb
+        )
+        if not part.empty:
+            parts.append(part)
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+def summarize_phase2(phase2_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    summary = (
+        phase2_df.groupby(
+            ["cluster_scheme", "type", "cluster", "model", "base_model", "embedding"],
+            as_index=False,
+        )["wmape"]
+        .mean()
+        .rename(columns={"wmape": "wmape_mean"})
+    )
+    idx = summary.groupby(["cluster_scheme", "type", "cluster"])["wmape_mean"].idxmin()
+    best = summary.loc[idx].copy()
+    best = best.rename(columns={"model": "best_hybrid", "wmape_mean": "best_wmape"})
+    return summary, best

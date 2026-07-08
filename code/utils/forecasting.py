@@ -66,7 +66,7 @@ def forecast_ml_panel(
     if model_name == "rf":
         model = RandomForestRegressor(n_estimators=300, max_depth=None, random_state=42, n_jobs=-1)
     else:
-        model = XGBRegressor(
+        xgb_params = dict(
             n_estimators=400,
             max_depth=6,
             learning_rate=0.05,
@@ -76,6 +76,15 @@ def forecast_ml_panel(
             random_state=42,
             n_jobs=-1,
         )
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                xgb_params["tree_method"] = "hist"
+                xgb_params["device"] = "cuda"
+        except Exception:
+            pass
+        model = XGBRegressor(**xgb_params)
     model.fit(X_train, y_train)
     pred = model.predict(X_val)
     return np.maximum(pred.astype(float), 0.0)

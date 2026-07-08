@@ -1,10 +1,12 @@
-"""Deep learning forecasters: LSTM, Autoformer, N-HiTS, iTransformer (CPU)."""
+"""Deep learning forecasters: LSTM, Autoformer, N-HiTS, iTransformer (CUDA/CPU auto)."""
 from __future__ import annotations
 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+
+from .device import get_torch_device
 
 
 def _make_windows(series: np.ndarray, lookback: int, horizon: int):
@@ -79,33 +81,46 @@ def train_dl_forecaster(
     epochs: int = 100,
     lr: float = 1e-3,
 ) -> np.ndarray:
-    device = torch.device("cpu")
+    device = get_torch_device()
     y = series.astype(np.float32)
     if len(y) < lookback + horizon + 5:
         return np.full(horizon, max(float(y[-1]), 0.0))
     X, Y = _make_windows(y, lookback, horizon)
     if len(X) < 5:
         return np.full(horizon, max(float(y[-1]), 0.0))
+
+    pin = device.type == "cuda"
+    batch_size = 64 if pin else 32
     X_t = torch.tensor(X).unsqueeze(-1)
     Y_t = torch.tensor(Y)
-    ds = TensorDataset(X_t, Y_t)
-    loader = DataLoader(ds, batch_size=32, shuffle=True)
+    loader = DataLoader(
+        TensorDataset(X_t, Y_t),
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=pin,
+    )
+
     model = model_cls(lookback, horizon).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
     model.train()
     for _ in range(epochs):
         for xb, yb in loader:
-            xb, yb = xb.to(device), yb.to(device)
+            xb = xb.to(device, non_blocking=pin)
+            yb = yb.to(device, non_blocking=pin)
             opt.zero_grad()
             pred = model(xb)
             loss = loss_fn(pred, yb)
             loss.backward()
             opt.step()
+
     model.eval()
     with torch.no_grad():
-        last = torch.tensor(y[-lookback:]).float().unsqueeze(0).unsqueeze(-1).to(device)
+        last = torch.tensor(y[-lookback:]).float().unsqueeze(0).unsqueeze(-1)
+        last = last.to(device, non_blocking=pin)
         pred = model(last).cpu().numpy().reshape(-1)
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
     return np.maximum(pred, 0.0)
 
 
