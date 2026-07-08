@@ -53,6 +53,33 @@ def _pick_detail(
     return phase1[mask]
 
 
+def build_family_from_phase2_best(
+    phase2: pd.DataFrame,
+    phase2_best: pd.DataFrame,
+    weights: pd.DataFrame,
+) -> pd.DataFrame:
+    """조건별 XGBoost+Best 임베딩 제품 단위 WMAPE."""
+    parts = []
+    for row in phase2_best.itertuples(index=False):
+        detail = phase2[
+            (phase2["cluster_scheme"] == row.cluster_scheme)
+            & (phase2["type"] == row.type)
+            & (phase2["cluster"] == row.cluster)
+            & (phase2["model"] == row.best_hybrid)
+        ]
+        if detail.empty:
+            continue
+        detail = detail.merge(weights, on=["type", "family"], how="left")
+        detail["final_model"] = row.best_hybrid
+        parts.append(detail)
+    if not parts:
+        return pd.DataFrame()
+    out = pd.concat(parts, ignore_index=True)
+    return out[
+        ["cluster_scheme", "type", "cluster", "family", "wmape", "val_weight", "final_model", "embedding"]
+    ]
+
+
 def build_family_final_results(
     phase1: pd.DataFrame,
     phase2: pd.DataFrame,
