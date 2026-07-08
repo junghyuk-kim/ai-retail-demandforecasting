@@ -1,7 +1,10 @@
-"""Deep learning forecasters using official implementations.
+"""Deep learning forecasters — official model code via adapters.
 
 - Autoformer, iTransformer: thuml/Time-Series-Library (vendor submodule)
-- N-HiTS, LSTM: Nixtla/neuralforecast
+- N-HiTS, LSTM: Nixtla/neuralforecast (pip)
+
+Training is per type×cluster multivariate panel (not per-SKU loops).
+See docs/실험_프레임워크.md for differences vs thesis experiments.
 """
 from __future__ import annotations
 

@@ -1,4 +1,8 @@
-"""Adapter for thuml/Time-Series-Library official Autoformer & iTransformer."""
+"""Adapter for thuml/Time-Series-Library Autoformer & iTransformer.
+
+Uses Model classes from vendor/Time-Series-Library (git submodule).
+Not the standalone thuml/Autoformer or thuml/iTransformer run.py pipelines.
+"""
 from __future__ import annotations
 
 import contextlib

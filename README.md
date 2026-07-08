@@ -21,7 +21,9 @@ Ecuador Favorita **Store Sales** 데이터를 활용해, 소매 수요 예측의
 3. **시계열 임베딩 6종**을 결합하면 예측이 개선되는가?
 4. 최종적으로 **SBC(rule-base) vs ML 클러스터링** 중 어느 scheme이 type별로 나은가?
 
-> SBC 4분류(Smooth→ARIMA 등)는 **이론적 권고**이며, 본 실습에서는 **실측 지표로 Best를 선택**합니다. 논문 전체 SOTA는 iTransformer이나, 본 Ecuador 165시계열·3주 검증에서는 XGBoost 등이 더 자주 선택됩니다.
+> SBC 4분류(Smooth→ARIMA 등)는 **이론적 권고**이며, 본 실습에서는 **실측 지표로 Best를 선택**합니다.
+
+**논문 vs 실습:** 학위논문에서는 iTransformer 등 DL이 강세였으나, 본 Ecuador 실습(165 주간 시계열·lookback 16·3주 검증·MAPE Best)에서는 **XGBoost가 10모델 중 가장 자주 선택**됩니다. lag·rolling 피처가 강하고(13장), DL은 논문 대비 variate 수·입력 길이가 작습니다. 자세한 비교는 [`docs/실험_프레임워크.md`](docs/실험_프레임워크.md) 참고.
 
 ---
 
@@ -41,12 +43,23 @@ Ecuador Favorita **Store Sales** 데이터를 활용해, 소매 수요 예측의
 
 ## 사용 알고리즘
 
-### 딥러닝 (09장) — 공식 구현
+### 예측 (Phase 1, 10종 — 07·08·09장)
 
-| 모델 | 출처 |
-|------|------|
-| Autoformer, iTransformer | [thuml/Time-Series-Library](https://github.com/thuml/Time-Series-Library) (`vendor/` 서브모듈) |
-| N-HiTS, LSTM | [Nixtla/neuralforecast](https://github.com/Nixtla/neuralforecast) |
+| 구분 | 알고리즘 |
+|------|----------|
+| 통계 (07) | ARIMA, Prophet, SBA, TSB |
+| 머신러닝 (08) | Random Forest, XGBoost |
+| 딥러닝 (09) | LSTM, Autoformer, N-HiTS, iTransformer (아래 공식 구현) |
+
+### 딥러닝 (09장) — 공식 모델 코드
+
+| 모델 | 연결 방식 | 비고 |
+|------|-----------|------|
+| Autoformer, iTransformer | [thuml/Time-Series-Library](https://github.com/thuml/Time-Series-Library) (`vendor/` submodule) | 단독 [Autoformer](https://github.com/thuml/Autoformer)·[iTransformer](https://github.com/thuml/iTransformer) repo의 `run.py`가 아닌 **TSlib `Model` 클래스** |
+| N-HiTS, LSTM | [Nixtla/neuralforecast](https://github.com/Nixtla/neuralforecast) pip | 조건 내 다변량 패널 일괄 학습 |
+
+- 학습: type×cluster 조건당 **family 다변량 패널** 1회 (`tslib_adapter.py`, `neuralforecast_adapter.py`)
+- 설정: lookback **16**, 검증 **3주**, Phase1 Best = **MAPE**
 
 ```bash
 git submodule update --init --recursive   # Time-Series-Library 받기
@@ -95,7 +108,7 @@ SBC (ADI·CV² rule-base 4클러스터)
 | 06 | `06_클러스터링_방법.ipynb` | 24조합 그리드 → ML_CLUSTER | **ML 클러스터** 축 생성 (TS2Vec+KMeans) |
 | 07 | `07_통계_예측모델.ipynb` | 40조건×ARIMA/Prophet/SBA/TSB | Phase1 1/3 — 통계·간헐 수요 |
 | 08 | `08_머신러닝_예측모델.ipynb` | 40조건×RF/XGBoost | Phase1 2/3 — 피처 기반 패널 ML |
-| 09 | `09_딥러닝_예측모델.ipynb` | 40조건×DL 4종 + **10모델 통합 Best** | Phase1 3/3 — 딥러닝 + 조건별 최적 단일 모델 |
+| 09 | `09_딥러닝_예측모델.ipynb` | 40조건×DL 4종 + **10모델 통합 Best** | 공식 DL + Phase1 3/3 (조건별 MAPE Best) |
 | 10 | `10_임베딩_기반_시계열분석.ipynb` | **XGBoost 고정** × 6임베딩, 40조건 | 임베딩 방법 비교(실험 수 축소), 11장 입력 |
 | 11 | `11_하이브리드_수요예측.ipynb` | type별 **가중 WMAPE** SBC vs ML | **어느 clustering scheme이 유리한지** 최종 비교 |
 | 12 | `12_제품_수요패턴_RIDR_분석.ipynb` | CV·RIDR·수요 밴드, 11장 연계 | scheme 차이의 **변동성 근거** (논문 3장 스타일) |
@@ -106,7 +119,8 @@ SBC (ADI·CV² rule-base 4클러스터)
 
 - **40조건** = 5 type × 4 cluster × 2 scheme (**SBC** + **ML**)
 - 시계열이 없는 조합은 제외 → 유효 **35조건** 정도
-- 10장: Phase1 Best가 조건마다 달라 실험 폭발 → **XGBoost(13/35회 Best)** 를 대표 base로 고정해 6임베딩 비교
+- 10장: Phase1 Best가 조건마다 달라 실험 폭발 → **XGBoost(다수 조건 Best)** 를 대표 base로 고정해 6임베딩 비교
+- 09장 DL 재실행(공식 구현) 후에도 **10모델 통합 Best는 XGBoost가 가장 빈번** — 논문(iTransformer 강세)과 실습 조건이 다름
 
 ### 11장 핵심 결론 (예시)
 
@@ -132,7 +146,7 @@ ai-retail-demandforecasting/
 │   └── processed/             # parquet/csv 산출물 (.gitignore)
 └── docs/
     ├── 00_개발환경_셋팅.md
-    └── 실험_프레임워크.md       # 논문 설계 참고 (일부 구버전 서술 포함)
+    └── 실험_프레임워크.md       # 논문 vs 실습 차이, DL 구현, 해석 가이드
 ```
 
 ---
@@ -172,7 +186,9 @@ ai-retail-demandforecasting/
 |------|------|
 | `forecasting.py` | ARIMA, Prophet, RF/XGBoost 패널 예측 |
 | `intermittent.py` | SBA, TSB (간헐 수요) |
-| `dl_models.py` | **공식** DL: Autoformer·iTransformer ([thuml/Time-Series-Library](https://github.com/thuml/Time-Series-Library)), N-HiTS·LSTM ([Nixtla/neuralforecast](https://github.com/Nixtla/neuralforecast)) |
+| `dl_models.py` | DL 조건 단위 학습 진입점 → `tslib_adapter` / `neuralforecast_adapter` |
+| `tslib_adapter.py` | thuml Time-Series-Library **Autoformer·iTransformer** 학습·추론 |
+| `neuralforecast_adapter.py` | Nixtla **NHITS·LSTM** 조건 패널 학습 |
 | `device.py` | CUDA 자동 감지, DataLoader `pin_memory` |
 | `metrics.py` | MAE, RMSE, MAPE, MASE, WMAPE, `forecast_metrics()` |
 | `phase_experiments.py` | **Phase1/2 실험 엔진**: 40조건 루프, 4지표 저장, XGBoost 고정 Phase2, 전역 임베딩 캐시 |
@@ -234,10 +250,12 @@ python execute_notebook.py "07_통계_예측모델.ipynb" 14400
 
 ## 해석 시 유의사항
 
-1. **조건별 Best ≠ 전역 1위** — XGBoost가 가장 자주 이겨도 type×cluster마다 최적 모델은 다름
-2. **SBC 라벨 ≠ 최적 알고리즘** — 분류는 해석·세분화 축, 선택은 실측 MAPE/WMAPE
-3. **CV·RIDR ↔ scheme** — 고변동→SBC, 저변동→ML **경향**은 있으나 C type 등 예외 존재
-4. **단일 데이터셋** — Ecuador 5 type 결과가 모든 소매 데이터에 일반화되지는 않음
+1. **논문 ≠ 실습 Best** — 논문 iTransformer 강세와 Ecuador 실습(XGBoost 우세)은 **데이터·lookback·지표·variate 수** 차이로 설명 가능
+2. **조건별 Best ≠ 전역 1위** — XGBoost가 가장 자주 이겨도 type×cluster마다 최적 모델은 다름
+3. **SBC 라벨 ≠ 최적 알고리즘** — 분류는 해석·세분화 축, 선택은 실측 MAPE/WMAPE
+4. **CV·RIDR ↔ scheme** — 고변동→SBC, 저변동→ML **경향**은 있으나 C type 등 예외 존재
+5. **DL 공식 코드** — TSlib/neuralforecast **모델 클래스** 사용; 논문 벤치마크 `run.py` 파이프라인과 동일하지 않음
+6. **단일 데이터셋** — Ecuador 5 type 결과가 모든 소매 데이터에 일반화되지는 않음
 
 ---
 
