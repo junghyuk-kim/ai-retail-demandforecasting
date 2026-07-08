@@ -17,3 +17,5 @@ tslearn
 dtaidistance
 pyts
 tqdm
+fastdtw
+joblib

@@ -12,6 +12,36 @@ def embed_pca(X: np.ndarray, n_components: int = 10) -> np.ndarray:
     return PCA(n_components=n_components, random_state=42).fit_transform(StandardScaler().fit_transform(X))
 
 
+def embed_fastdtw(X: np.ndarray, n_components: int = 10, n_jobs: int = -1) -> np.ndarray:
+    """FastDTW distance matrix -> MDS embedding (Daiso FastDTW 파이프라인)."""
+    from joblib import Parallel, delayed
+    from sklearn.manifold import MDS
+
+    try:
+        from fastdtw import fastdtw
+    except ImportError:
+        return embed_dtw_mds(X, n_components)
+
+    Xs = StandardScaler().fit_transform(X).astype(np.float32)
+    n = Xs.shape[0]
+    _scalar_dist = lambda a, b: abs(float(a) - float(b))
+
+    def _row_dist(i: int) -> list[float]:
+        return [float(fastdtw(Xs[i], Xs[j], dist=_scalar_dist)[0]) for j in range(n)]
+
+    dist = np.array(Parallel(n_jobs=n_jobs)(delayed(_row_dist)(i) for i in range(n)), dtype=float)
+    np.fill_diagonal(dist, 0.0)
+    dist = (dist + dist.T) / 2.0
+    n_components = min(n_components, n - 1)
+    return MDS(
+        n_components=n_components,
+        dissimilarity="precomputed",
+        random_state=42,
+        n_init=4,
+        max_iter=300,
+    ).fit_transform(dist)
+
+
 def embed_dtw_mds(X: np.ndarray, n_components: int = 10) -> np.ndarray:
     try:
         from tslearn.metrics import cdist_dtw
@@ -200,7 +230,7 @@ def embed_patchtst(X: np.ndarray, n_components: int = 10, patch_len: int = 8, ep
 
 EMBEDDERS = {
     "PCA": embed_pca,
-    "DTW": embed_dtw_mds,
+    "FastDTW": embed_fastdtw,
     "AE": embed_autoencoder,
     "GAF-CNN": embed_gaf_cnn,
     "TS2Vec": embed_ts2vec,
