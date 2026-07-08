@@ -26,6 +26,7 @@ DL_MODELS = ["LSTM", "Autoformer", "N-HiTS", "iTransformer"]
 
 PHASE1_MODELS = STAT_MODELS + ML_MODELS + DL_MODELS
 RANK_METRIC = "mape"  # 조건별 Best 선정 기준 (MAE/RMSE/MAPE/MASE 중)
+REPRESENTATIVE_BASE_MODEL = "XGBoost"  # Phase2 임베딩 대표 base (07-09 Best 빈도 1위)
 
 EMBEDDING_NAMES = list(EMBEDDERS.keys())
 LOOKBACK = 16
@@ -508,15 +509,26 @@ def run_phase2_all(
     feat_df: pd.DataFrame,
     cluster_col: str,
     cluster_scheme: str,
-    best_df: pd.DataFrame,
+    best_df: pd.DataFrame | None = None,
     emb_cache: dict[str, dict[tuple, np.ndarray]] | None = None,
+    fixed_model: str | None = None,
 ) -> pd.DataFrame:
+    """Phase2 grid. fixed_model 지정 시 5type×4cluster 전 조건에 동일 base 사용."""
     parts = []
-    sub_best = best_df[best_df["cluster_scheme"] == cluster_scheme]
-    tasks = []
-    for row in sub_best.itertuples(index=False):
-        for emb in EMBEDDING_NAMES:
-            tasks.append((row.type, int(row.cluster), row.best_model, emb))
+    tasks: list[tuple] = []
+    if fixed_model:
+        types = sorted(df["type"].unique())
+        conditions = build_conditions(types)
+        for row in conditions.itertuples(index=False):
+            for emb in EMBEDDING_NAMES:
+                tasks.append((row.type, int(row.cluster), fixed_model, emb))
+    else:
+        if best_df is None:
+            raise ValueError("best_df or fixed_model required")
+        sub_best = best_df[best_df["cluster_scheme"] == cluster_scheme]
+        for row in sub_best.itertuples(index=False):
+            for emb in EMBEDDING_NAMES:
+                tasks.append((row.type, int(row.cluster), row.best_model, emb))
 
     for typ, cluster, best_model, emb in tqdm(tasks, desc=f"Phase2 {cluster_scheme}"):
         part = run_phase2_condition(

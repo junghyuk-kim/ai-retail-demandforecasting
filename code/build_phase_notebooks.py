@@ -137,39 +137,67 @@ display(phase1_best.sort_values(['cluster_scheme', 'type', 'cluster']))
     ),
 ]
 
-# --- 10 Embedding Phase2 ---
+# --- 10 Embedding Phase2 (XGBoost fixed) ---
 cells10 = [
     md(
         "# 10 임베딩 기반 시계열 분석 (Phase 2)\n\n"
-        "Phase1 Best 알고리즘 × **6 임베딩** (PCA, FastDTW, AE, GAF-CNN, TS2Vec, PatchTST)\n\n"
-        "- 오차지표: MAE, RMSE, MAPE, MASE → 조건별 최적 임베딩 조합 선정"
+        "## 왜 XGBoost를 대표 base로 고정했는가?\n\n"
+        "Phase1(07–09) **10모델 통합 Best** 결과(35개 유효 조건, MAPE 기준)에서:\n"
+        "- **XGBoost 13회**로 Best 빈도 **1위** (2위 ARIMA 5회)\n"
+        "- SBC·ML **양쪽 scheme**에서 모두 자주 선택\n"
+        "- 임베딩 벡터를 **추가 피처**로 붙이기에 패널 ML 구조가 적합\n\n"
+        "조건마다 Best base가 다르면 `조건×서로 다른 base×6임베딩`으로 실험 수가 과도해지므로, "
+        "**임베딩 방법(6종) 비교**를 목적으로 전체 최다 winner인 **XGBoost**를 대표 base로 고정합니다.\n\n"
+        "| 축 | 내용 |\n"
+        "|----|------|\n"
+        "| type | A, B, C, D, E (5) |\n"
+        "| cluster | SBC(rule-base) + ML(TS2Vec+KMeans), 각 4클러스터 |\n"
+        "| **조건** | **40** (5×4×2) |\n"
+        "| base (고정) | **XGBoost** |\n"
+        "| 임베딩 | PCA, FastDTW, AE, GAF-CNN, TS2Vec, PatchTST |\n"
+        "| 조합 | **40 × 6 = 240** |\n\n"
+        "**오차지표:** MAE, RMSE, MAPE, MASE — 조건별 Best 임베딩은 **MAPE** 최소 기준"
     ),
     md("### ⓪ 환경 설정"),
-    code(SETUP + "\nphase1_best = pd.read_csv(DATA_PROCESSED / 'phase1_best_per_condition.csv')\n"),
-    md("### ① Phase 2 하이브리드 실험"),
+    code(SETUP),
+    md("### ① XGBoost × 6임베딩 — 40조건 실험"),
     code(
-        """p2_cache = DATA_PROCESSED / 'phase2_results.parquet'
+        """from utils.phase_experiments import REPRESENTATIVE_BASE_MODEL
+
+BASE = REPRESENTATIVE_BASE_MODEL
+print('대표 base:', BASE)
+
+p2_cache = DATA_PROCESSED / 'phase2_results.parquet'
 if p2_cache.exists():
     phase2 = pd.read_parquet(p2_cache)
     phase2_summary, phase2_best = summarize_phase2(phase2)
-    print('Phase2 캐시 로드 |', len(phase2))
+    print('Phase2 캐시 로드 |', len(phase2), 'rows')
 else:
     emb_cache = build_global_embedding_cache(df)
-    p2_sbc = run_phase2_all(df, feat_df, 'SBC_CLUSTER', 'SBC', phase1_best, emb_cache=emb_cache)
-    p2_ml = run_phase2_all(df, feat_df, 'ML_CLUSTER', 'ML', phase1_best, emb_cache=emb_cache)
+    p2_sbc = run_phase2_all(df, feat_df, 'SBC_CLUSTER', 'SBC', fixed_model=BASE, emb_cache=emb_cache)
+    p2_ml = run_phase2_all(df, feat_df, 'ML_CLUSTER', 'ML', fixed_model=BASE, emb_cache=emb_cache)
     phase2 = pd.concat([p2_sbc, p2_ml], ignore_index=True)
     phase2_summary, phase2_best = summarize_phase2(phase2)
     phase2.to_parquet(p2_cache, index=False)
     phase2_summary.to_csv(DATA_PROCESSED / 'phase2_summary.csv', index=False)
     phase2_best.to_csv(DATA_PROCESSED / 'phase2_best_per_condition.csv', index=False)
+    print('Phase2 완료 |', len(phase2), 'rows')
 
+print('유효 조건(제품 있음):', phase2.groupby(['cluster_scheme','type','cluster']).ngroups)
 display(phase2_best.sort_values(['cluster_scheme', 'type', 'cluster']))
-print('\\n=== Best 임베딩 빈도 ===')
+"""
+    ),
+    md("### ② 결과 요약"),
+    code(
+        """print('=== 조건별 Best 임베딩 (MAPE) ===')
 print(phase2_best['embedding'].value_counts())
 
-final_best = pick_final_per_condition(phase1_best, phase2_best)
-final_best.to_csv(DATA_PROCESSED / 'final_best_per_condition.csv', index=False)
-print('Phase1 vs Phase2 최종 | Phase2 승률:', round((final_best.winner=='Phase2').mean(), 3))
+print('\\n=== 임베딩별 평균 4지표 (전 조건) ===')
+emb_avg = phase2.groupby('embedding')[['mae','rmse','mape','mase']].mean().round(2)
+display(emb_avg.sort_values('mape'))
+
+print('\\n=== scheme별 XGBoost+임베딩 평균 MAPE ===')
+print(phase2.groupby(['cluster_scheme','embedding'])['mape'].mean().unstack('cluster_scheme').round(2))
 """
     ),
 ]
