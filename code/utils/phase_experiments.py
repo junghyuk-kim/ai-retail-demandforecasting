@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from .dl_models import train_dl_forecaster
+from .dl_models import DL_MODEL_NAMES, condition_wide, forecast_dl_condition
 from .embeddings import EMBEDDERS
 from .forecasting import (
     FORECASTERS,
@@ -33,12 +33,12 @@ LOOKBACK = 16
 try:
     import torch
 
-    DL_EPOCHS = 80 if torch.cuda.is_available() else 40
+    DL_EPOCHS = 50 if torch.cuda.is_available() else 40
 except Exception:
     DL_EPOCHS = 40
 N_EMB_DIM = 10
 
-SERIES_MODELS = {"ARIMA", "Prophet", "SBA", "TSB", "LSTM", "Autoformer", "N-HiTS", "iTransformer"}
+SERIES_MODELS = {"ARIMA", "Prophet", "SBA", "TSB"}
 PANEL_MODELS = {"RF", "XGBoost"}
 
 
@@ -171,14 +171,8 @@ def forecast_one_series(
     if model in PANEL_MODELS:
         return np.array([])  # panel handled separately
 
-    if model in {"LSTM", "Autoformer", "N-HiTS", "iTransformer"}:
-        pred = train_dl_forecaster(
-            sales.astype(float).values, lookback, horizon, model, epochs=DL_EPOCHS
-        )
-        if hybrid and embedding is not None:
-            scale = 1.0 + 0.05 * np.tanh(float(embedding.mean()))
-            pred = pred * scale
-        return pred
+    if model in DL_MODEL_NAMES:
+        raise RuntimeError("DL models must be trained at condition level via forecast_dl_condition()")
 
     exog = embedding if hybrid and embedding is not None else None
     pred = _forecast_stat(model, weeks, sales, horizon, exog=exog)
@@ -223,7 +217,19 @@ def run_phase1_condition(
         return pd.DataFrame()
 
     panel_models = [m for m in models if m in PANEL_MODELS]
+    dl_models = [m for m in models if m in DL_MODEL_NAMES]
     series_models = [m for m in models if m in SERIES_MODELS]
+
+    # DL: 조건 내 다변량 패널 1회 학습 (공식 Autoformer/iTransformer/NHITS/LSTM)
+    dl_preds: dict[str, dict[tuple, np.ndarray]] = {m: {} for m in dl_models}
+    if dl_models:
+        g_cond = df[(df["type"] == typ) & (df[cluster_col] == cluster) & (df["yearweek"] <= TRAIN_WEEK_MAX)]
+        wide = condition_wide(g_cond)
+        if not wide.empty:
+            batch = forecast_dl_condition(wide, horizon, LOOKBACK, dl_models, epochs=DL_EPOCHS)
+            for dm in dl_models:
+                for fam, pred in batch.get(dm, {}).items():
+                    dl_preds[dm][(typ, fam)] = pred
 
     # Panel ML: train once per condition
     panel_preds: dict[str, dict[tuple, np.ndarray]] = {m: {} for m in panel_models}
@@ -265,6 +271,26 @@ def run_phase1_condition(
 
         for model in series_models:
             pred = forecast_one_series(model, g_train, g_val, feature_cols)
+            rows.append(
+                _metrics_row(
+                    {
+                        "phase": 1,
+                        "cluster_scheme": cluster_scheme,
+                        "type": typ2,
+                        "cluster": cluster,
+                        "family": fam,
+                        "model": model,
+                    },
+                    y_true,
+                    pred,
+                    y_train,
+                )
+            )
+
+        for model in dl_models:
+            pred = dl_preds.get(model, {}).get((typ2, fam))
+            if pred is None or len(pred) != len(y_true):
+                pred = np.zeros(len(y_true))
             rows.append(
                 _metrics_row(
                     {

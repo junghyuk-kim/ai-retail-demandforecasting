@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -143,6 +144,112 @@ def _predict(
     return pred.reshape(-1)
 
 
+def _make_windows_mv(
+    wide: np.ndarray,
+    seq_len: int,
+    label_len: int,
+    pred_len: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Multivariate windows: X [N,L,C], Y [N,label_len+pred_len,C]."""
+    mat = wide.astype(np.float32)
+    t_steps, _ = mat.shape
+    xs, ys = [], []
+    total_y = label_len + pred_len
+    for i in range(t_steps - seq_len - pred_len + 1):
+        s_end = i + seq_len
+        r_begin = s_end - label_len
+        r_end = r_begin + total_y
+        xs.append(mat[i:s_end, :])
+        ys.append(mat[r_begin:r_end, :])
+    if not xs:
+        return (
+            np.empty((0, seq_len, mat.shape[1]), dtype=np.float32),
+            np.empty((0, total_y, mat.shape[1]), dtype=np.float32),
+        )
+    return np.array(xs, dtype=np.float32), np.array(ys, dtype=np.float32)
+
+
+def _predict_mv(
+    model: nn.Module,
+    model_name: str,
+    wide: np.ndarray,
+    seq_len: int,
+    label_len: int,
+    pred_len: int,
+    device: torch.device,
+) -> np.ndarray:
+    """Return [pred_len, n_variates]."""
+    model.eval()
+    x_enc = torch.tensor(wide[-seq_len:, :], dtype=torch.float32).unsqueeze(0).to(device)
+    with torch.no_grad():
+        if model_name == "iTransformer":
+            out = model(x_enc, None, None, None)
+        else:
+            known = torch.tensor(wide[-label_len:, :], dtype=torch.float32).unsqueeze(0).to(device)
+            dec_zeros = torch.zeros(1, pred_len, wide.shape[1], device=device)
+            dec_inp = torch.cat([known, dec_zeros], dim=1)
+            out = model(x_enc, None, dec_inp, None)
+    return out[:, -pred_len:, :].cpu().numpy()[0]
+
+
+def train_tslib_condition(
+    wide_train: pd.DataFrame,
+    horizon: int,
+    lookback: int,
+    model_name: str,
+    epochs: int = 40,
+    label_len: int | None = None,
+) -> dict[str, np.ndarray]:
+    """조건 내 다변량 패널 — iTransformer/Autoformer 공식 구현."""
+    mat = wide_train.fillna(0).to_numpy(dtype=np.float32)
+    families = list(wide_train.columns)
+    seq_len = lookback
+    pred_len = horizon
+    label_len = label_len or max(1, min(seq_len // 2, pred_len * 2))
+
+    if mat.shape[0] < seq_len + pred_len + 5 or mat.shape[1] == 0:
+        return {}
+
+    X, Y = _make_windows_mv(mat, seq_len, label_len, pred_len)
+    if len(X) < 3:
+        return {}
+
+    device = get_torch_device()
+    configs = _make_config(seq_len, pred_len, label_len, enc_in=mat.shape[1])
+    model = _load_model(model_name, configs).to(device)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    loss_fn = nn.MSELoss()
+    pin = device.type == "cuda"
+    batch_size = min(128 if pin else 32, len(X))
+    loader = DataLoader(
+        TensorDataset(torch.tensor(X), torch.tensor(Y)),
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=pin,
+    )
+
+    model.train()
+    for _ in range(epochs):
+        for batch_x, batch_y in loader:
+            batch_x = batch_x.to(device, non_blocking=pin)
+            batch_y = batch_y.to(device, non_blocking=pin)
+            opt.zero_grad()
+            if model_name == "iTransformer":
+                out = model(batch_x, None, None, None)
+            else:
+                dec_zeros = torch.zeros(batch_x.size(0), pred_len, mat.shape[1], device=device)
+                dec_inp = torch.cat([batch_y[:, :label_len, :], dec_zeros], dim=1)
+                out = model(batch_x, None, dec_inp, None)
+            loss = loss_fn(out[:, -pred_len:, :], batch_y[:, -pred_len:, :])
+            loss.backward()
+            opt.step()
+
+    pred_mat = _predict_mv(model, model_name, mat, seq_len, label_len, pred_len, device)
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return {fam: np.maximum(pred_mat[:, i], 0.0) for i, fam in enumerate(families)}
+
+
 def train_tslib_forecaster(
     series: np.ndarray,
     lookback: int,
@@ -171,9 +278,10 @@ def train_tslib_forecaster(
     loss_fn = nn.MSELoss()
 
     pin = device.type == "cuda"
+    batch_size = min(128 if pin else 32, len(X))
     loader = DataLoader(
         TensorDataset(torch.tensor(X), torch.tensor(Y)),
-        batch_size=min(32, len(X)),
+        batch_size=batch_size,
         shuffle=True,
         pin_memory=pin,
     )
