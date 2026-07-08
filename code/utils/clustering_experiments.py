@@ -72,11 +72,38 @@ def run_embedding_clustering_grid(
     return quality_df, label_cache
 
 
-def select_best_combo(quality_df: pd.DataFrame) -> pd.Series:
-    valid = quality_df[quality_df["n_clusters"] >= 2].copy()
+def select_best_combo(quality_df: pd.DataFrame, k: int = 4) -> pd.Series:
+    """Pick best combo using silhouette (high) and Davies-Bouldin (low) jointly."""
+    valid = quality_df[
+        quality_df["silhouette"].notna() & quality_df["davies_bouldin"].notna()
+    ].copy()
     if valid.empty:
         return quality_df.iloc[0]
-    valid["rank_score"] = valid["silhouette"].rank(ascending=False) + valid[
-        "davies_bouldin"
-    ].rank(ascending=True)
-    return valid.sort_values("rank_score").iloc[0]
+
+    # Prefer fixed-K methods (KMeans/HAC/GMM) when comparing against SBC K=4.
+    fixed_k = valid[valid["n_clusters"] == k]
+    if not fixed_k.empty:
+        valid = fixed_k
+
+    valid["sil_rank"] = valid["silhouette"].rank(ascending=False)
+    valid["db_rank"] = valid["davies_bouldin"].rank(ascending=True)
+    valid["rank_score"] = valid["sil_rank"] + valid["db_rank"]
+    cluster_order = {"KMeans": 0, "HAC": 1, "GMM": 2, "DBSCAN": 3}
+    valid["cl_ord"] = valid["clustering"].map(cluster_order).fillna(9)
+    best = valid.sort_values(
+        ["rank_score", "davies_bouldin", "silhouette", "cl_ord"],
+        ascending=[True, True, False, True],
+    ).iloc[0]
+    return best
+
+
+def add_joint_rank(quality_df: pd.DataFrame, k: int = 4) -> pd.DataFrame:
+    """Return quality table with joint silhouette+DB rank columns."""
+    out = quality_df.copy()
+    fixed = out[out["n_clusters"] == k].copy()
+    if fixed.empty:
+        fixed = out[out["n_clusters"] >= 2].copy()
+    fixed["sil_rank"] = fixed["silhouette"].rank(ascending=False)
+    fixed["db_rank"] = fixed["davies_bouldin"].rank(ascending=True)
+    fixed["rank_score"] = fixed["sil_rank"] + fixed["db_rank"]
+    return fixed.sort_values(["rank_score", "davies_bouldin"]).reset_index(drop=True)

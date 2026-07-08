@@ -7,6 +7,25 @@ from sklearn.manifold import MDS
 from sklearn.preprocessing import StandardScaler
 
 
+def _set_torch_seed(seed: int = 42) -> None:
+    import random
+
+    import torch
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def _loader(ds, batch_size: int, shuffle: bool = True):
+    import torch
+    from torch.utils.data import DataLoader
+
+    g = torch.Generator()
+    g.manual_seed(42)
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, generator=g)
+
+
 def embed_pca(X: np.ndarray, n_components: int = 10) -> np.ndarray:
     n_components = min(n_components, X.shape[0] - 1, X.shape[1])
     return PCA(n_components=n_components, random_state=42).fit_transform(StandardScaler().fit_transform(X))
@@ -58,13 +77,14 @@ def embed_dtw_mds(X: np.ndarray, n_components: int = 10) -> np.ndarray:
 def embed_autoencoder(X: np.ndarray, n_components: int = 10, epochs: int = 80) -> np.ndarray:
     import torch
     import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
+    from torch.utils.data import TensorDataset
 
+    _set_torch_seed()
     device = torch.device("cpu")
     Xs = StandardScaler().fit_transform(X).astype(np.float32)
     tensor = torch.tensor(Xs)
     ds = TensorDataset(tensor)
-    loader = DataLoader(ds, batch_size=32, shuffle=True)
+    loader = _loader(ds, batch_size=32)
 
     class AE(nn.Module):
         def __init__(self, d_in: int, d_latent: int):
@@ -98,7 +118,9 @@ def embed_autoencoder(X: np.ndarray, n_components: int = 10, epochs: int = 80) -
 def embed_gaf_cnn(X: np.ndarray, n_components: int = 10, epochs: int = 60) -> np.ndarray:
     import torch
     import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
+    from torch.utils.data import TensorDataset
+
+    _set_torch_seed()
 
     try:
         from pyts.image import GramianAngularField
@@ -126,7 +148,7 @@ def embed_gaf_cnn(X: np.ndarray, n_components: int = 10, epochs: int = 60) -> np
     model = GAFCNN(n_components).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
     ds = TensorDataset(torch.tensor(imgs))
-    loader = DataLoader(ds, batch_size=16, shuffle=True)
+    loader = _loader(ds, batch_size=16)
     model.train()
     for _ in range(epochs):
         for (batch,) in loader:
@@ -145,8 +167,9 @@ def embed_gaf_cnn(X: np.ndarray, n_components: int = 10, epochs: int = 60) -> np
 def embed_ts2vec(X: np.ndarray, n_components: int = 10, epochs: int = 80) -> np.ndarray:
     import torch
     import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
+    from torch.utils.data import TensorDataset
 
+    _set_torch_seed()
     device = torch.device("cpu")
     Xs = StandardScaler().fit_transform(X).astype(np.float32)
     t = torch.tensor(Xs)
@@ -166,7 +189,7 @@ def embed_ts2vec(X: np.ndarray, n_components: int = 10, epochs: int = 80) -> np.
     enc = Encoder(Xs.shape[1], n_components).to(device)
     opt = torch.optim.Adam(enc.parameters(), lr=1e-3)
     ds = TensorDataset(t)
-    loader = DataLoader(ds, batch_size=32, shuffle=True)
+    loader = _loader(ds, batch_size=32)
     enc.train()
     for _ in range(epochs):
         for (batch,) in loader:
@@ -186,8 +209,9 @@ def embed_ts2vec(X: np.ndarray, n_components: int = 10, epochs: int = 80) -> np.
 def embed_patchtst(X: np.ndarray, n_components: int = 10, patch_len: int = 8, epochs: int = 80) -> np.ndarray:
     import torch
     import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
+    from torch.utils.data import TensorDataset
 
+    _set_torch_seed()
     device = torch.device("cpu")
     Xs = StandardScaler().fit_transform(X).astype(np.float32)
     seq_len = Xs.shape[1]
@@ -213,7 +237,7 @@ def embed_patchtst(X: np.ndarray, n_components: int = 10, patch_len: int = 8, ep
     model = PatchTSTEncoder().to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
     ds = TensorDataset(t)
-    loader = DataLoader(ds, batch_size=32, shuffle=True)
+    loader = _loader(ds, batch_size=32)
     model.train()
     for _ in range(epochs):
         for (batch,) in loader:
