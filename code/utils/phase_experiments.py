@@ -172,22 +172,8 @@ def forecast_one_series(
         return np.array([])  # panel handled separately
 
     if model in {"LSTM", "Autoformer", "N-HiTS", "iTransformer"}:
-        from .dl_models import (
-            AutoformerLite,
-            ITransformerLite,
-            LSTMForecaster,
-            NHITSBlock,
-            train_dl_forecaster,
-        )
-
-        cls_map = {
-            "LSTM": LSTMForecaster,
-            "Autoformer": AutoformerLite,
-            "N-HiTS": NHITSBlock,
-            "iTransformer": ITransformerLite,
-        }
         pred = train_dl_forecaster(
-            sales.astype(float).values, lookback, horizon, cls_map[model], epochs=DL_EPOCHS
+            sales.astype(float).values, lookback, horizon, model, epochs=DL_EPOCHS
         )
         if hybrid and embedding is not None:
             scale = 1.0 + 0.05 * np.tanh(float(embedding.mean()))

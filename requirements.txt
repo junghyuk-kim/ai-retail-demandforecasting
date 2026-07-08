@@ -12,6 +12,9 @@ xgboost
 prophet
 torch
 optuna
+neuralforecast
+reformer-pytorch
+einops
 tqdm
 tslearn
 dtaidistance

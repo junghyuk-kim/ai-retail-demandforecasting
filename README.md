@@ -41,13 +41,17 @@ Ecuador Favorita **Store Sales** 데이터를 활용해, 소매 수요 예측의
 
 ## 사용 알고리즘
 
-### 예측 (Phase 1, 10종 — 07·08·09장)
+### 딥러닝 (09장) — 공식 구현
 
-| 구분 | 알고리즘 |
-|------|----------|
-| 통계 (07) | ARIMA, Prophet, SBA, TSB |
-| 머신러닝 (08) | Random Forest, XGBoost |
-| 딥러닝 (09) | LSTM, Autoformer, N-HiTS, iTransformer |
+| 모델 | 출처 |
+|------|------|
+| Autoformer, iTransformer | [thuml/Time-Series-Library](https://github.com/thuml/Time-Series-Library) (`vendor/` 서브모듈) |
+| N-HiTS, LSTM | [Nixtla/neuralforecast](https://github.com/Nixtla/neuralforecast) |
+
+```bash
+git submodule update --init --recursive   # Time-Series-Library 받기
+pip install -r requirements.txt
+```
 
 ### 시계열 임베딩 (10장)
 
@@ -115,6 +119,8 @@ SBC (ADI·CV² rule-base 4클러스터)
 
 ```
 ai-retail-demandforecasting/
+├── vendor/
+│   └── Time-Series-Library/   # git submodule (thuml 공식 Autoformer·iTransformer)
 ├── code/
 │   ├── 02~14_*.ipynb          # 실습 노트북 (13 변수중요도, 14 Optuna)
 │   ├── execute_notebook.py    # 노트북 일괄 실행·nbformat 수정
@@ -166,7 +172,7 @@ ai-retail-demandforecasting/
 |------|------|
 | `forecasting.py` | ARIMA, Prophet, RF/XGBoost 패널 예측 |
 | `intermittent.py` | SBA, TSB (간헐 수요) |
-| `dl_models.py` | LSTM, Autoformer, N-HiTS, iTransformer 학습·추론 |
+| `dl_models.py` | **공식** DL: Autoformer·iTransformer ([thuml/Time-Series-Library](https://github.com/thuml/Time-Series-Library)), N-HiTS·LSTM ([Nixtla/neuralforecast](https://github.com/Nixtla/neuralforecast)) |
 | `device.py` | CUDA 자동 감지, DataLoader `pin_memory` |
 | `metrics.py` | MAE, RMSE, MAPE, MASE, WMAPE, `forecast_metrics()` |
 | `phase_experiments.py` | **Phase1/2 실험 엔진**: 40조건 루프, 4지표 저장, XGBoost 고정 Phase2, 전역 임베딩 캐시 |
