@@ -151,7 +151,7 @@ cells10 = [
         "| 축 | 내용 |\n"
         "|----|------|\n"
         "| type | A, B, C, D, E (5) |\n"
-        "| cluster | SBC(rule-base) + ML(TS2Vec+KMeans), 각 4클러스터 |\n"
+        "| cluster | SBC(rule-base) + ML(PatchTST+HAC), 각 4클러스터 |\n"
         "| **조건** | **40** (5×4×2) |\n"
         "| base (고정) | **XGBoost** |\n"
         "| 임베딩 | PCA, FastDTW, AE, GAF-CNN, TS2Vec, PatchTST |\n"
