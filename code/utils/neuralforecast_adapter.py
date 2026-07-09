@@ -153,22 +153,3 @@ def train_nf_condition_static(
             pred = np.resize(pred, horizon) if len(pred) else np.zeros(horizon)
         out[fam] = np.maximum(pred, 0.0)
     return out
-
-
-def train_nf_forecaster(
-    series: np.ndarray,
-    lookback: int,
-    horizon: int,
-    model_name: str,
-    epochs: int = 40,
-) -> np.ndarray:
-    """단일 시계열 fallback."""
-    y = np.asarray(series, dtype=float)
-    if len(y) < lookback + horizon + 5:
-        return np.full(horizon, max(float(y[-1]) if len(y) else 0.0, 0.0))
-
-    wide = pd.DataFrame({"s0": y})
-    preds = train_nf_condition(wide, horizon, lookback, model_name, epochs=epochs)
-    if not preds:
-        return np.full(horizon, max(float(y[-1]), 0.0))
-    return preds["s0"]

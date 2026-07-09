@@ -11,12 +11,9 @@ from tqdm.auto import tqdm
 from .dl_models import DL_MODEL_NAMES, NF_MODELS, TSLIB_MODELS, condition_wide
 from .embeddings import EMBEDDERS
 from .forecasting import (
-    FORECASTERS,
     build_scaled_panel_training,
     forecast_arima,
-    forecast_ml_panel,
     forecast_prophet,
-    recursive_panel_forecast,
     scaled_recursive_forecast,
 )
 from .intermittent import forecast_sba, forecast_tsb
@@ -187,7 +184,7 @@ def forecast_one_series(
         return np.array([])  # panel handled separately
 
     if model in DL_MODEL_NAMES:
-        raise RuntimeError("DL models must be trained at condition level via forecast_dl_condition()")
+        raise RuntimeError("DL models must be trained at condition level (train_tslib_condition/train_nf_condition)")
 
     exog = embedding if hybrid and embedding is not None else None
     pred = _forecast_stat(model, weeks, sales, horizon, exog=exog)
@@ -215,18 +212,6 @@ def _actual_map(df: pd.DataFrame, keys: list[tuple], weeks: list[int]) -> dict[t
         g = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"].isin(weeks))]
         out[(t, f)] = g.sort_values("yearweek")["sales"].to_numpy(dtype=float)
     return out
-
-
-def _hist_future_frames(
-    feat_df: pd.DataFrame, keys: list[tuple], hist_max: int, future_weeks: list[int]
-):
-    """재귀 예측용 hist(≤hist_max 실측)·future(예측구간 외생피처) 프레임."""
-    hist, future = {}, {}
-    for t, f in keys:
-        base = feat_df[(feat_df["type"] == t) & (feat_df["family"] == f)]
-        hist[(t, f)] = base[base["yearweek"] <= hist_max].sort_values("yearweek")
-        future[(t, f)] = base[base["yearweek"].isin(future_weeks)].sort_values("yearweek")
-    return hist, future
 
 
 def run_phase1_condition(
