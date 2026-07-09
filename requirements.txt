@@ -22,3 +22,4 @@ pyts
 tqdm
 fastdtw
 joblib
+torchsummary

@@ -66,13 +66,23 @@ git submodule update --init --recursive   # Time-Series-Library 받기
 pip install -r requirements.txt
 ```
 
-### 시계열 임베딩 (10장)
+### 시계열 임베딩 (06·10장) — 공식 repo
 
-PCA, FastDTW, AutoEncoder, GAF-CNN, TS2Vec, PatchTST
+| 임베딩 | 연결 방식 | 비고 |
+|--------|-----------|------|
+| GAF-CNN | [eliotwalt/gaf-cnn](https://github.com/eliotwalt/gaf-cnn) (`vendor/gaf-cnn` submodule) | 공식 `Gasf` + `GafToGafRegressor` DenseNet encoder |
+| TS2Vec | [zhihanyue/ts2vec](https://github.com/zhihanyue/ts2vec) (`vendor/ts2vec` submodule) | 공식 `TS2Vec` 클래스, contrastive 학습 |
+| PatchTST | [PatchTST/PatchTST](https://github.com/PatchTST/PatchTST) (`vendor/PatchTST` submodule) | `PatchTST_self_supervised` backbone |
+| PCA, FastDTW, AE | sklearn / fastdtw pip / PyTorch AE | 경량 baseline |
+
+```bash
+git submodule update --init --recursive   # ts2vec, PatchTST, gaf-cnn 포함
+pip install -r requirements.txt
+```
 
 ### 클러스터링 (06장)
 
-6 임베딩 × 4 방법 (KMeans, HAC, GMM, DBSCAN) = 24조합 → **TS2Vec + KMeans** 채택
+6 임베딩 × 4 방법 (KMeans, HAC, GMM, DBSCAN) = 24조합 → **공식 임베딩 기준 Best 조합** 채택 (예: PatchTST+HAC)
 
 ### 분류 (05장)
 
@@ -105,7 +115,7 @@ SBC (ADI·CV² rule-base 4클러스터)
 | 03 | `03_특징_엔지니어링.ipynb` | lag·rolling 등 피처 | RF/XGBoost 패널 예측용 |
 | 04 | `04_수요패턴_분석.ipynb` | 패턴 개요·기초 통계 | 12장 상세 분석의 입문 |
 | 05 | `05_rule_base_분류.ipynb` | SBC 4분류 라벨 | **rule-base 클러스터** 축 생성 |
-| 06 | `06_클러스터링_방법.ipynb` | 24조합 그리드 → ML_CLUSTER | **ML 클러스터** 축 생성 (TS2Vec+KMeans) |
+| 06 | `06_클러스터링_방법.ipynb` | 24조합 그리드 → ML_CLUSTER | **ML 클러스터** 축 생성 (공식 임베딩 Best 조합) |
 | 07 | `07_통계_예측모델.ipynb` | 40조건×ARIMA/Prophet/SBA/TSB | Phase1 1/3 — 통계·간헐 수요 |
 | 08 | `08_머신러닝_예측모델.ipynb` | 40조건×RF/XGBoost | Phase1 2/3 — 피처 기반 패널 ML |
 | 09 | `09_딥러닝_예측모델.ipynb` | 40조건×DL 4종 + **10모델 통합 Best** | 공식 DL + Phase1 3/3 (조건별 MAPE Best) |
@@ -134,7 +144,10 @@ SBC (ADI·CV² rule-base 4클러스터)
 ```
 ai-retail-demandforecasting/
 ├── vendor/
-│   └── Time-Series-Library/   # git submodule (thuml 공식 Autoformer·iTransformer)
+│   ├── Time-Series-Library/   # DL (Autoformer, iTransformer)
+│   ├── ts2vec/                # TS2Vec 임베딩
+│   ├── PatchTST/              # PatchTST 임베딩
+│   └── gaf-cnn/               # GAF-CNN 임베딩
 ├── code/
 │   ├── 02~14_*.ipynb          # 실습 노트북 (13 변수중요도, 14 Optuna)
 │   ├── execute_notebook.py    # 노트북 일괄 실행·nbformat 수정
@@ -176,7 +189,11 @@ ai-retail-demandforecasting/
 
 | 파일 | 역할 |
 |------|------|
-| `embeddings.py` | 6종 임베딩 함수 + `EMBEDDERS` 레지스트리 (GPU 지원) |
+| `embeddings.py` | 6종 임베딩 + `EMBEDDERS` 레지스트리 |
+| `ts2vec_adapter.py` | [zhihanyue/ts2vec](https://github.com/zhihanyue/ts2vec) 공식 TS2Vec |
+| `patchtst_adapter.py` | [PatchTST/PatchTST](https://github.com/PatchTST/PatchTST) self-supervised backbone |
+| `gaf_cnn_adapter.py` | [eliotwalt/gaf-cnn](https://github.com/eliotwalt/gaf-cnn) GASF + DenseNet encoder |
+| `vendor_import.py` | vendor import 시 `code/utils` shadowing 방지 |
 | `clustering_experiments.py` | 6×4 그리드 실험, 실루엣·DB index, **joint rank**로 Best 조합 선정 |
 | `metrics.py` | `clustering_quality()` — Silhouette, Davies-Bouldin |
 

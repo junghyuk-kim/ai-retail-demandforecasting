@@ -1,3 +1,12 @@
 [submodule "vendor/Time-Series-Library"]
 	path = vendor/Time-Series-Library
 	url = https://github.com/thuml/Time-Series-Library.git
+[submodule "vendor/ts2vec"]
+	path = vendor/ts2vec
+	url = https://github.com/zhihanyue/ts2vec.git
+[submodule "vendor/PatchTST"]
+	path = vendor/PatchTST
+	url = https://github.com/PatchTST/PatchTST.git
+[submodule "vendor/gaf-cnn"]
+	path = vendor/gaf-cnn
+	url = https://github.com/eliotwalt/gaf-cnn.git
