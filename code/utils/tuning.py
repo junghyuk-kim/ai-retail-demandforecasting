@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .forecasting import recursive_panel_forecast
+from .forecasting import build_scaled_panel_training, scaled_recursive_forecast
 from .metrics import rmse
 
 
@@ -38,22 +38,26 @@ def _rmse_over_families(pred_map: dict, actual_map: dict) -> float:
 
 
 def tune_xgb_condition(
-    train_df: pd.DataFrame,
-    hist_frames: dict,
-    future_val_frames: dict,
-    val_actual: dict,
+    feat_df: pd.DataFrame,
+    keys: list,
     feature_cols: list[str],
+    train_max: int,
+    val_weeks: list,
+    val_actual: dict,
     horizon: int,
     n_trials: int = 25,
     seed: int = 42,
 ) -> dict:
-    """XGBoost 조건 패널 Optuna 튜닝 — val 재귀예측 RMSE 최소화."""
+    """XGBoost 조건 패널 Optuna 튜닝 — family별 Min-Max 정규화 후 val 재귀예측 RMSE 최소화."""
     import optuna
     from xgboost import XGBRegressor
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    X = train_df[feature_cols].fillna(0)
-    y = train_df["sales"].astype(float)
+    train_df, scale = build_scaled_panel_training(feat_df, keys, feature_cols, train_max)
+    if train_df.empty:
+        return {}
+    X = train_df[feature_cols]
+    y = train_df["y"].astype(float)
 
     def objective(trial):
         params = dict(
@@ -69,9 +73,10 @@ def tune_xgb_condition(
             random_state=seed,
             n_jobs=-1,
         )
-        model = XGBRegressor(**params)
-        model.fit(X, y)
-        preds = recursive_panel_forecast(model, feature_cols, hist_frames, future_val_frames, horizon)
+        model = XGBRegressor(**params).fit(X, y)
+        preds = scaled_recursive_forecast(
+            model, feat_df, keys, feature_cols, scale, train_max, val_weeks, horizon
+        )
         return _rmse_over_families(preds, val_actual)
 
     study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed))

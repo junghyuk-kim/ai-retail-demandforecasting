@@ -12,10 +12,12 @@ from .dl_models import DL_MODEL_NAMES, TSLIB_MODELS, condition_wide
 from .embeddings import EMBEDDERS
 from .forecasting import (
     FORECASTERS,
+    build_scaled_panel_training,
     forecast_arima,
     forecast_ml_panel,
     forecast_prophet,
     recursive_panel_forecast,
+    scaled_recursive_forecast,
 )
 from .intermittent import forecast_sba, forecast_tsb
 from .metrics import FORECAST_METRICS, forecast_metrics, wmape
@@ -262,30 +264,28 @@ def run_phase1_condition(
         for t, f in series_list
     }
 
-    # ---------- Panel ML (RF/XGBoost): 튜닝 → train+val 재학습 → test 재귀예측 ----------
+    # ---------- Panel ML (RF/XGBoost): family별 Min-Max 정규화 → 튜닝 → 재학습 → test 재귀예측 ----------
     panel_preds: dict[str, dict[tuple, np.ndarray]] = {m: {} for m in panel_models}
     if panel_models:
-        cond = (feat_df["type"] == typ) & (feat_df[cluster_col] == cluster)
-        train_df = feat_df[cond & (feat_df["yearweek"] <= TRAIN_WEEK_MAX)].dropna(subset=feature_cols)
-        trainval_df = feat_df[cond & (feat_df["yearweek"] <= TRAINVAL_WEEK_MAX)].dropna(subset=feature_cols)
-        hist_tr, fut_val = _hist_future_frames(feat_df, series_list, TRAIN_WEEK_MAX, VAL_WEEKS)
-        hist_tv, fut_test = _hist_future_frames(feat_df, series_list, TRAINVAL_WEEK_MAX, TEST_WEEKS)
+        cond_feat = feat_df[(feat_df["type"] == typ) & (feat_df[cluster_col] == cluster)]
+        train_scaled, scale_tv = build_scaled_panel_training(cond_feat, series_list, feature_cols, TRAINVAL_WEEK_MAX)
         for pm in panel_models:
-            if trainval_df.empty:
+            if train_scaled.empty:
                 continue
             params = None
-            if pm == "XGBoost" and tune and TUNE_XGB and not train_df.empty:
+            if pm == "XGBoost" and tune and TUNE_XGB:
                 try:
                     tuned = tune_xgb_condition(
-                        train_df, hist_tr, fut_val, val_actual, feature_cols,
-                        horizon, n_trials=TUNE_XGB_TRIALS,
+                        cond_feat, series_list, feature_cols, TRAIN_WEEK_MAX, VAL_WEEKS,
+                        val_actual, horizon, n_trials=TUNE_XGB_TRIALS,
                     )
-                    params = {k: v for k, v in tuned.items() if k != "objective_rmse"}
+                    params = {k: v for k, v in tuned.items() if k != "objective_rmse"} or None
                 except Exception:
                     params = None
-            model = _fit_panel(trainval_df, feature_cols, pm, params)
-            preds = recursive_panel_forecast(model, feature_cols, hist_tv, fut_test, horizon)
-            panel_preds[pm] = preds
+            model = _fit_scaled_panel(train_scaled, feature_cols, pm, params)
+            panel_preds[pm] = scaled_recursive_forecast(
+                model, cond_feat, series_list, feature_cols, scale_tv, TRAINVAL_WEEK_MAX, TEST_WEEKS, horizon
+            )
 
     # ---------- DL: 튜닝(tslib) → train+val 재학습 → test 예측 ----------
     dl_preds: dict[str, dict[tuple, np.ndarray]] = {m: {} for m in dl_models}
@@ -299,7 +299,8 @@ def run_phase1_condition(
             preds_fam = {}
             if dm in TSLIB_MODELS:
                 params = {}
-                if tune and TUNE_DL and not wide_train.empty:
+                # 튜닝은 논문 주역 iTransformer에만 적용 (Autoformer는 정규화 기본 설정)
+                if tune and TUNE_DL and dm == "iTransformer" and not wide_train.empty:
                     try:
                         tuned = tune_itransformer_condition(
                             wide_train, val_actual_by_fam, horizon, LOOKBACK,
@@ -348,16 +349,17 @@ def run_phase1_condition(
     return pd.DataFrame(rows)
 
 
-def _fit_panel(train_df: pd.DataFrame, feature_cols: list[str], model_name: str, params: dict | None):
-    """RF/XGBoost 패널 학습 (params: XGBoost Optuna 결과)."""
+def _fit_scaled_panel(train_scaled: pd.DataFrame, feature_cols: list[str], model_name: str, params: dict | None):
+    """정규화 패널 학습 (타깃 'y' = 정규화 판매). params: XGBoost Optuna 결과."""
     from sklearn.ensemble import RandomForestRegressor
 
-    X = train_df[feature_cols].fillna(0)
-    y = train_df["sales"].astype(float)
+    X = train_scaled[feature_cols]
+    y = train_scaled["y"].astype(float)
     if model_name == "RF":
         model = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
     else:
-        from .tuning import _default_xgb  # noqa
+        from .tuning import _default_xgb
+
         model = _default_xgb(params)
     model.fit(X, y)
     return model
@@ -485,18 +487,16 @@ def run_phase2_condition(
     if best_model in PANEL_MODELS:
         extra_cols = [f"emb_{i}" for i in range(emb_dim)]
         feat_hybrid = feature_cols + extra_cols
-        cond = (feat_df["type"] == typ) & (feat_df[cluster_col] == cluster)
-        trainval_df = _attach_embeddings(
-            feat_df[cond & (feat_df["yearweek"] <= TRAINVAL_WEEK_MAX)].dropna(subset=feature_cols), emb_map
+        cond_feat = _attach_embeddings(
+            feat_df[(feat_df["type"] == typ) & (feat_df[cluster_col] == cluster)], emb_map
         )
-        hist_tv, fut_test = _hist_future_frames(feat_df, keys, TRAINVAL_WEEK_MAX, TEST_WEEKS)
-        # 임베딩을 hist·future 프레임에 부착 (재귀 예측 시 정적 피처로 전달)
-        hist_tv = {k: _attach_embeddings(v, emb_map) for k, v in hist_tv.items()}
-        fut_test = {k: _attach_embeddings(v, emb_map) for k, v in fut_test.items()}
-        if trainval_df.empty:
+        train_scaled, scale_tv = build_scaled_panel_training(cond_feat, keys, feat_hybrid, TRAINVAL_WEEK_MAX)
+        if train_scaled.empty:
             return pd.DataFrame()
-        model = _fit_panel(trainval_df, feat_hybrid, best_model, None)
-        preds = recursive_panel_forecast(model, feat_hybrid, hist_tv, fut_test, _horizon())
+        model = _fit_scaled_panel(train_scaled, feat_hybrid, best_model, None)
+        preds = scaled_recursive_forecast(
+            model, cond_feat, keys, feat_hybrid, scale_tv, TRAINVAL_WEEK_MAX, TEST_WEEKS, _horizon()
+        )
         for (t, f) in keys:
             y_true = test_actual[(t, f)]
             pred = preds.get((t, f))

@@ -121,6 +121,63 @@ def _recompute_lag_features(sales_hist: list[float], feat_row: dict) -> dict:
     return out
 
 
+def _minmax_params(sales: list[float]) -> tuple[float, float]:
+    lo = min(sales)
+    rng = (max(sales) - lo) or 1.0
+    return lo, rng
+
+
+def build_scaled_panel_training(
+    feat_df: pd.DataFrame, keys: list[tuple], feature_cols: list[str], hist_max: int
+) -> tuple[pd.DataFrame, dict]:
+    """family별 Min-Max(판매량)로 정규화한 패널 학습 데이터 생성 (논문 §4.2 forecasting scaling).
+
+    이질적 규모(예: 판매 1 vs 265,000) family를 한 패널에 학습할 때 작은 family를
+    과대예측하는 문제를 방지. lag/rolling은 정규화 판매 이력에서 재계산, 타깃도 정규화.
+    반환: (학습 DataFrame[feature_cols + 'y'], {(t,f): (lo, rng)})
+    """
+    rows, scale = [], {}
+    for t, f in keys:
+        g = feat_df[(feat_df["type"] == t) & (feat_df["family"] == f) & (feat_df["yearweek"] <= hist_max)].sort_values("yearweek")
+        s = g["sales"].astype(float).tolist()
+        if len(s) < 2:
+            scale[(t, f)] = (0.0, 1.0)
+            continue
+        lo, rng = _minmax_params(s)
+        scale[(t, f)] = (lo, rng)
+        recs = g.to_dict("records")
+        sc_s = [(v - lo) / rng for v in s]
+        for i in range(1, len(s)):
+            ft = _recompute_lag_features(sc_s[:i], recs[i])
+            rows.append({**{c: ft.get(c, 0.0) for c in feature_cols}, "y": sc_s[i]})
+    return pd.DataFrame(rows).fillna(0), scale
+
+
+def scaled_recursive_forecast(
+    model, feat_df: pd.DataFrame, keys: list[tuple], feature_cols: list[str],
+    scale: dict, hist_max: int, future_weeks: list[int], horizon: int,
+) -> dict[tuple, np.ndarray]:
+    """정규화 공간에서 재귀 다단계 예측 후 family별 역 Min-Max (원 스케일 반환)."""
+    preds = {}
+    for t, f in keys:
+        lo, rng = scale.get((t, f), (0.0, 1.0))
+        g = feat_df[(feat_df["type"] == t) & (feat_df["family"] == f)]
+        hist = g[g["yearweek"] <= hist_max].sort_values("yearweek")["sales"].astype(float).tolist()
+        fut = g[g["yearweek"].isin(future_weeks)].sort_values("yearweek").head(horizon)
+        if not hist or fut.empty:
+            continue
+        sh = [(v - lo) / rng for v in hist]
+        out = []
+        for _, fr in fut.iterrows():
+            ft = _recompute_lag_features(sh, fr.to_dict())
+            x = pd.DataFrame([{c: ft.get(c, 0.0) for c in feature_cols}]).fillna(0)
+            p = float(model.predict(x)[0])
+            sh.append(p)
+            out.append(max(p * rng + lo, 0.0))
+        preds[(t, f)] = np.array(out, dtype=float)
+    return preds
+
+
 def recursive_panel_forecast(
     model,
     feature_cols: list[str],
