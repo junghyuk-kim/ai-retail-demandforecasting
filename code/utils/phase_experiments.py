@@ -8,17 +8,20 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from .dl_models import DL_MODEL_NAMES, condition_wide, forecast_dl_condition
+from .dl_models import DL_MODEL_NAMES, TSLIB_MODELS, condition_wide
 from .embeddings import EMBEDDERS
 from .forecasting import (
     FORECASTERS,
     forecast_arima,
     forecast_ml_panel,
     forecast_prophet,
+    recursive_panel_forecast,
 )
 from .intermittent import forecast_sba, forecast_tsb
 from .metrics import FORECAST_METRICS, forecast_metrics, wmape
-from .splits import TRAIN_WEEK_MAX, VAL_WEEKS
+from .neuralforecast_adapter import train_nf_condition
+from .splits import TEST_WEEKS, TRAIN_WEEK_MAX, TRAINVAL_WEEK_MAX, VAL_WEEKS
+from .tslib_adapter import train_tslib_condition
 
 STAT_MODELS = ["ARIMA", "Prophet", "SBA", "TSB"]
 ML_MODELS = ["RF", "XGBoost"]
@@ -26,24 +29,31 @@ DL_MODELS = ["LSTM", "Autoformer", "N-HiTS", "iTransformer"]
 
 PHASE1_MODELS = STAT_MODELS + ML_MODELS + DL_MODELS
 RANK_METRIC = "mape"  # 조건별 Best 선정 기준 (MAE/RMSE/MAPE/MASE 중)
-REPRESENTATIVE_BASE_MODEL = "XGBoost"  # Phase2 임베딩 대표 base (07-09 Best 빈도 1위)
+REPRESENTATIVE_BASE_MODEL = "XGBoost"  # Phase2 임베딩 대표 base
 
 EMBEDDING_NAMES = list(EMBEDDERS.keys())
-LOOKBACK = 16
+LOOKBACK = 26  # 13주 예측 지평에 맞춘 lookback (약 반년)
 try:
     import torch
 
-    DL_EPOCHS = 50 if torch.cuda.is_available() else 40
+    DL_EPOCHS = 60 if torch.cuda.is_available() else 40
 except Exception:
     DL_EPOCHS = 40
 N_EMB_DIM = 10
+
+# 튜닝 설정 (논문 §4.4 Optuna TPE, val RMSE). 축소 데이터라 조건 패널 직접 튜닝.
+TUNE_XGB = True
+TUNE_XGB_TRIALS = 25
+TUNE_DL = True
+TUNE_DL_TRIALS = 8
+TUNE_DL_EPOCHS = 40  # 튜닝 시 epoch (최종은 DL_EPOCHS)
 
 SERIES_MODELS = {"ARIMA", "Prophet", "SBA", "TSB"}
 PANEL_MODELS = {"RF", "XGBoost"}
 
 
 def _horizon() -> int:
-    return len(VAL_WEEKS)
+    return len(TEST_WEEKS)
 
 
 def build_conditions(types: list, clusters: list[int] = (1, 2, 3, 4)) -> pd.DataFrame:
@@ -193,6 +203,27 @@ def _metrics_row(base: dict, y_true, y_pred, y_train) -> dict:
     return row
 
 
+def _actual_map(df: pd.DataFrame, keys: list[tuple], weeks: list[int]) -> dict[tuple, np.ndarray]:
+    """{(type,family): 해당 주차 실측 sales 배열} (yearweek 오름차순)."""
+    out = {}
+    for t, f in keys:
+        g = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"].isin(weeks))]
+        out[(t, f)] = g.sort_values("yearweek")["sales"].to_numpy(dtype=float)
+    return out
+
+
+def _hist_future_frames(
+    feat_df: pd.DataFrame, keys: list[tuple], hist_max: int, future_weeks: list[int]
+):
+    """재귀 예측용 hist(≤hist_max 실측)·future(예측구간 외생피처) 프레임."""
+    hist, future = {}, {}
+    for t, f in keys:
+        base = feat_df[(feat_df["type"] == t) & (feat_df["family"] == f)]
+        hist[(t, f)] = base[base["yearweek"] <= hist_max].sort_values("yearweek")
+        future[(t, f)] = base[base["yearweek"].isin(future_weeks)].sort_values("yearweek")
+    return hist, future
+
+
 def run_phase1_condition(
     df: pd.DataFrame,
     feat_df: pd.DataFrame,
@@ -201,18 +232,21 @@ def run_phase1_condition(
     typ: str,
     cluster: int,
     models: list[str] | None = None,
+    tune: bool = True,
 ) -> pd.DataFrame:
+    """조건(type×cluster) Phase1: train으로 학습·튜닝(val RMSE) → train+val 재학습 → test 예측."""
+    from .tuning import tune_itransformer_condition, tune_xgb_condition
+
     models = models or PHASE1_MODELS
     feature_cols = _feature_cols(feat_df)
     horizon = _horizon()
     rows = []
 
-    series_keys = (
+    series_list = list(
         df[(df["type"] == typ) & (df[cluster_col] == cluster)][["type", "family"]]
         .drop_duplicates()
         .itertuples(index=False, name=None)
     )
-    series_list = list(series_keys)
     if not series_list:
         return pd.DataFrame()
 
@@ -220,114 +254,113 @@ def run_phase1_condition(
     dl_models = [m for m in models if m in DL_MODEL_NAMES]
     series_models = [m for m in models if m in SERIES_MODELS]
 
-    # DL: 조건 내 다변량 패널 1회 학습 (공식 Autoformer/iTransformer/NHITS/LSTM)
-    dl_preds: dict[str, dict[tuple, np.ndarray]] = {m: {} for m in dl_models}
-    if dl_models:
-        g_cond = df[(df["type"] == typ) & (df[cluster_col] == cluster) & (df["yearweek"] <= TRAIN_WEEK_MAX)]
-        wide = condition_wide(g_cond)
-        if not wide.empty:
-            batch = forecast_dl_condition(wide, horizon, LOOKBACK, dl_models, epochs=DL_EPOCHS)
-            for dm in dl_models:
-                for fam, pred in batch.get(dm, {}).items():
-                    dl_preds[dm][(typ, fam)] = pred
+    test_actual = _actual_map(df, series_list, TEST_WEEKS)
+    val_actual = _actual_map(df, series_list, VAL_WEEKS)
+    trainval_sales = {
+        (t, f): df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAINVAL_WEEK_MAX)]
+        .sort_values("yearweek")["sales"].to_numpy(dtype=float)
+        for t, f in series_list
+    }
 
-    # Panel ML: train once per condition
+    # ---------- Panel ML (RF/XGBoost): 튜닝 → train+val 재학습 → test 재귀예측 ----------
     panel_preds: dict[str, dict[tuple, np.ndarray]] = {m: {} for m in panel_models}
     if panel_models:
-        keys_set = set(series_list)
-        train_cond = feat_df[
-            (feat_df["type"] == typ)
-            & (feat_df[cluster_col] == cluster)
-            & (feat_df["yearweek"] <= TRAIN_WEEK_MAX)
-        ].dropna(subset=feature_cols)
-        val_cond = feat_df[
-            (feat_df["type"] == typ)
-            & (feat_df[cluster_col] == cluster)
-            & (feat_df["yearweek"].isin(VAL_WEEKS))
-        ].copy()
+        cond = (feat_df["type"] == typ) & (feat_df[cluster_col] == cluster)
+        train_df = feat_df[cond & (feat_df["yearweek"] <= TRAIN_WEEK_MAX)].dropna(subset=feature_cols)
+        trainval_df = feat_df[cond & (feat_df["yearweek"] <= TRAINVAL_WEEK_MAX)].dropna(subset=feature_cols)
+        hist_tr, fut_val = _hist_future_frames(feat_df, series_list, TRAIN_WEEK_MAX, VAL_WEEKS)
+        hist_tv, fut_test = _hist_future_frames(feat_df, series_list, TRAINVAL_WEEK_MAX, TEST_WEEKS)
         for pm in panel_models:
-            if train_cond.empty or val_cond.empty:
+            if trainval_df.empty:
                 continue
-            pred_all = forecast_ml_panel(
-                train_cond,
-                val_cond,
-                feature_cols,
-                model_name="rf" if pm == "RF" else "xgboost",
-            )
-            val_cond = val_cond.copy()
-            val_cond["pred"] = pred_all
-            for (t, f), g in val_cond.groupby(["type", "family"]):
-                if (t, f) in keys_set:
-                    panel_preds[pm][(t, f)] = g.sort_values("yearweek")["pred"].values
+            params = None
+            if pm == "XGBoost" and tune and TUNE_XGB and not train_df.empty:
+                try:
+                    tuned = tune_xgb_condition(
+                        train_df, hist_tr, fut_val, val_actual, feature_cols,
+                        horizon, n_trials=TUNE_XGB_TRIALS,
+                    )
+                    params = {k: v for k, v in tuned.items() if k != "objective_rmse"}
+                except Exception:
+                    params = None
+            model = _fit_panel(trainval_df, feature_cols, pm, params)
+            preds = recursive_panel_forecast(model, feature_cols, hist_tv, fut_test, horizon)
+            panel_preds[pm] = preds
 
-    for typ2, fam in series_list:
-        g = df[(df["type"] == typ2) & (df["family"] == fam)]
-        g_train = g[g["yearweek"] <= TRAIN_WEEK_MAX]
-        g_val = g[g["yearweek"].isin(VAL_WEEKS)].sort_values("yearweek")
-        if g_val.empty:
+    # ---------- DL: 튜닝(tslib) → train+val 재학습 → test 예측 ----------
+    dl_preds: dict[str, dict[tuple, np.ndarray]] = {m: {} for m in dl_models}
+    if dl_models:
+        g_train = df[(df["type"] == typ) & (df[cluster_col] == cluster) & (df["yearweek"] <= TRAIN_WEEK_MAX)]
+        g_trainval = df[(df["type"] == typ) & (df[cluster_col] == cluster) & (df["yearweek"] <= TRAINVAL_WEEK_MAX)]
+        wide_train = condition_wide(g_train)
+        wide_trainval = condition_wide(g_trainval)
+        val_actual_by_fam = {f: val_actual.get((typ, f)) for (_, f) in series_list}
+        for dm in dl_models:
+            preds_fam = {}
+            if dm in TSLIB_MODELS:
+                params = {}
+                if tune and TUNE_DL and not wide_train.empty:
+                    try:
+                        tuned = tune_itransformer_condition(
+                            wide_train, val_actual_by_fam, horizon, LOOKBACK,
+                            n_trials=TUNE_DL_TRIALS, epochs=TUNE_DL_EPOCHS, model_name=dm,
+                        )
+                        params = {k: v for k, v in tuned.items() if k != "objective_rmse"}
+                    except Exception:
+                        params = {}
+                if not wide_trainval.empty:
+                    preds_fam = train_tslib_condition(
+                        wide_trainval, horizon, LOOKBACK, dm, epochs=DL_EPOCHS, **params
+                    )
+            else:  # N-HiTS / LSTM (neuralforecast)
+                if not wide_trainval.empty:
+                    preds_fam = train_nf_condition(wide_trainval, horizon, LOOKBACK, dm, epochs=DL_EPOCHS)
+            for f, pred in preds_fam.items():
+                dl_preds[dm][(typ, f)] = pred
+
+    # ---------- Series models (ARIMA/Prophet/SBA/TSB): train+val fit → test ----------
+    for t, f in series_list:
+        g = df[(df["type"] == t) & (df["family"] == f)]
+        g_trainval = g[g["yearweek"] <= TRAINVAL_WEEK_MAX]
+        g_test = g[g["yearweek"].isin(TEST_WEEKS)].sort_values("yearweek")
+        if g_test.empty:
             continue
-        y_true = g_val["sales"].values
-        y_train = g_train["sales"].values
+        y_true = test_actual[(t, f)]
+        y_train = trainval_sales[(t, f)]
+        base = {"phase": 1, "cluster_scheme": cluster_scheme, "type": t, "cluster": cluster, "family": f}
 
         for model in series_models:
-            pred = forecast_one_series(model, g_train, g_val, feature_cols)
-            rows.append(
-                _metrics_row(
-                    {
-                        "phase": 1,
-                        "cluster_scheme": cluster_scheme,
-                        "type": typ2,
-                        "cluster": cluster,
-                        "family": fam,
-                        "model": model,
-                    },
-                    y_true,
-                    pred,
-                    y_train,
-                )
-            )
+            pred = forecast_one_series(model, g_trainval, g_test, feature_cols)
+            rows.append(_metrics_row({**base, "model": model}, y_true, pred, y_train))
 
         for model in dl_models:
-            pred = dl_preds.get(model, {}).get((typ2, fam))
+            pred = dl_preds.get(model, {}).get((t, f))
             if pred is None or len(pred) != len(y_true):
                 pred = np.zeros(len(y_true))
-            rows.append(
-                _metrics_row(
-                    {
-                        "phase": 1,
-                        "cluster_scheme": cluster_scheme,
-                        "type": typ2,
-                        "cluster": cluster,
-                        "family": fam,
-                        "model": model,
-                    },
-                    y_true,
-                    pred,
-                    y_train,
-                )
-            )
+            rows.append(_metrics_row({**base, "model": model}, y_true, pred, y_train))
 
         for model in panel_models:
-            pred = panel_preds.get(model, {}).get((typ2, fam))
+            pred = panel_preds.get(model, {}).get((t, f))
             if pred is None or len(pred) != len(y_true):
                 pred = np.zeros(len(y_true))
-            rows.append(
-                _metrics_row(
-                    {
-                        "phase": 1,
-                        "cluster_scheme": cluster_scheme,
-                        "type": typ2,
-                        "cluster": cluster,
-                        "family": fam,
-                        "model": model,
-                    },
-                    y_true,
-                    pred,
-                    y_train,
-                )
-            )
+            rows.append(_metrics_row({**base, "model": model}, y_true, pred, y_train))
 
     return pd.DataFrame(rows)
+
+
+def _fit_panel(train_df: pd.DataFrame, feature_cols: list[str], model_name: str, params: dict | None):
+    """RF/XGBoost 패널 학습 (params: XGBoost Optuna 결과)."""
+    from sklearn.ensemble import RandomForestRegressor
+
+    X = train_df[feature_cols].fillna(0)
+    y = train_df["sales"].astype(float)
+    if model_name == "RF":
+        model = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
+    else:
+        from .tuning import _default_xgb  # noqa
+        model = _default_xgb(params)
+    model.fit(X, y)
+    return model
 
 
 def run_phase1_all(
@@ -390,7 +423,7 @@ def build_global_embedding_cache(df: pd.DataFrame) -> dict[str, dict[tuple, np.n
     keys = list(zip(keys_df["type"], keys_df["family"]))
     train_rows = []
     for t, f in keys:
-        s = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAIN_WEEK_MAX)]["sales"].values
+        s = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAINVAL_WEEK_MAX)]["sales"].values
         train_rows.append(s)
     train_matrix = np.vstack(train_rows).astype(float)
     cache: dict[str, dict[tuple, np.ndarray]] = {}
@@ -428,7 +461,7 @@ def run_phase2_condition(
         train_rows = []
         keys = []
         for t, f in series_list:
-            s = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAIN_WEEK_MAX)]["sales"].values
+            s = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAINVAL_WEEK_MAX)]["sales"].values
             train_rows.append(s)
             keys.append((t, f))
         train_matrix = np.vstack(train_rows).astype(float)
@@ -437,82 +470,50 @@ def run_phase2_condition(
 
     combo = f"{best_model}+{embedding_name}"
     emb_dim = next(iter(emb_map.values())).shape[0]
+    keys = [tuple(k) for k in series_list]
+    test_actual = _actual_map(df, keys, TEST_WEEKS)
+    trainval_sales = {
+        (t, f): df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAINVAL_WEEK_MAX)]
+        .sort_values("yearweek")["sales"].to_numpy(dtype=float)
+        for t, f in keys
+    }
+    base_row = lambda t, f: {
+        "phase": 2, "cluster_scheme": cluster_scheme, "type": t, "cluster": cluster,
+        "family": f, "model": combo, "base_model": best_model, "embedding": embedding_name,
+    }
 
     if best_model in PANEL_MODELS:
         extra_cols = [f"emb_{i}" for i in range(emb_dim)]
-        train_cond = feat_df[
-            (feat_df["type"] == typ)
-            & (feat_df[cluster_col] == cluster)
-            & (feat_df["yearweek"] <= TRAIN_WEEK_MAX)
-        ].dropna(subset=feature_cols)
-        val_cond = feat_df[
-            (feat_df["type"] == typ)
-            & (feat_df[cluster_col] == cluster)
-            & (feat_df["yearweek"].isin(VAL_WEEKS))
-        ].copy()
-        train_cond = _attach_embeddings(train_cond, emb_map)
-        val_cond = _attach_embeddings(val_cond, emb_map)
         feat_hybrid = feature_cols + extra_cols
-        pred_all = forecast_ml_panel(
-            train_cond,
-            val_cond,
-            feat_hybrid,
-            model_name="rf" if best_model == "RF" else "xgboost",
+        cond = (feat_df["type"] == typ) & (feat_df[cluster_col] == cluster)
+        trainval_df = _attach_embeddings(
+            feat_df[cond & (feat_df["yearweek"] <= TRAINVAL_WEEK_MAX)].dropna(subset=feature_cols), emb_map
         )
-        val_cond["pred"] = pred_all
-        for (t, f), g in val_cond.groupby(["type", "family"]):
-            g_val = g.sort_values("yearweek")
-            y_true = g_val["sales"].values
-            g_train = df[(df["type"] == t) & (df["family"] == f) & (df["yearweek"] <= TRAIN_WEEK_MAX)]
-            y_train = g_train["sales"].values
-            rows.append(
-                _metrics_row(
-                    {
-                        "phase": 2,
-                        "cluster_scheme": cluster_scheme,
-                        "type": t,
-                        "cluster": cluster,
-                        "family": f,
-                        "model": combo,
-                        "base_model": best_model,
-                        "embedding": embedding_name,
-                    },
-                    y_true,
-                    g_val["pred"].values,
-                    y_train,
-                )
-            )
+        hist_tv, fut_test = _hist_future_frames(feat_df, keys, TRAINVAL_WEEK_MAX, TEST_WEEKS)
+        # 임베딩을 hist·future 프레임에 부착 (재귀 예측 시 정적 피처로 전달)
+        hist_tv = {k: _attach_embeddings(v, emb_map) for k, v in hist_tv.items()}
+        fut_test = {k: _attach_embeddings(v, emb_map) for k, v in fut_test.items()}
+        if trainval_df.empty:
+            return pd.DataFrame()
+        model = _fit_panel(trainval_df, feat_hybrid, best_model, None)
+        preds = recursive_panel_forecast(model, feat_hybrid, hist_tv, fut_test, _horizon())
+        for (t, f) in keys:
+            y_true = test_actual[(t, f)]
+            pred = preds.get((t, f))
+            if pred is None or len(pred) != len(y_true):
+                pred = np.zeros(len(y_true))
+            rows.append(_metrics_row(base_row(t, f), y_true, pred, trainval_sales[(t, f)]))
         return pd.DataFrame(rows)
 
-    for t, f in series_list:
+    for t, f in keys:
         g = df[(df["type"] == t) & (df["family"] == f)]
-        g_train = g[g["yearweek"] <= TRAIN_WEEK_MAX]
-        g_val = g[g["yearweek"].isin(VAL_WEEKS)].sort_values("yearweek")
-        if g_val.empty:
+        g_trainval = g[g["yearweek"] <= TRAINVAL_WEEK_MAX]
+        g_test = g[g["yearweek"].isin(TEST_WEEKS)].sort_values("yearweek")
+        if g_test.empty:
             continue
-        y_true = g_val["sales"].values
-        y_train = g_train["sales"].values
         emb = emb_map[(t, f)]
-        pred = forecast_one_series(
-            best_model, g_train, g_val, feature_cols, embedding=emb, hybrid=True
-        )
-        rows.append(
-            _metrics_row(
-                {
-                    "phase": 2,
-                    "cluster_scheme": cluster_scheme,
-                    "type": t,
-                    "cluster": cluster,
-                    "family": f,
-                    "model": combo,
-                    "base_model": best_model,
-                    "embedding": embedding_name,
-                },
-                y_true,
-                pred,
-                y_train,
-            )
-        )
+        pred = forecast_one_series(best_model, g_trainval, g_test, feature_cols, embedding=emb, hybrid=True)
+        rows.append(_metrics_row(base_row(t, f), test_actual[(t, f)], pred, trainval_sales[(t, f)]))
     return pd.DataFrame(rows)
 
 

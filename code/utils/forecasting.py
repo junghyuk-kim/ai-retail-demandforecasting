@@ -90,6 +90,68 @@ def forecast_ml_panel(
     return np.maximum(pred.astype(float), 0.0)
 
 
+def _recompute_lag_features(sales_hist: list[float], feat_row: dict) -> dict:
+    """진행 중인 판매 이력으로 lag/rolling/간헐성 피처를 재계산 (03장 정의와 동일).
+
+    누수 방지: test 구간 예측 시 lag_k·rolling은 실제 미래값이 아니라
+    직전까지의 (실측+예측) 이력에서 계산한다.
+    """
+    s = np.asarray(sales_hist, dtype=float)
+    n = len(s)
+
+    def lag(k):
+        return s[n - k] if n >= k else np.nan
+
+    def roll_mean(w):
+        return s[max(0, n - w):].mean() if n else np.nan
+
+    def roll_std(w):
+        window = s[max(0, n - w):]
+        return window.std(ddof=1) if len(window) > 1 else np.nan
+
+    out = dict(feat_row)  # 외생·달력 피처는 그대로 (미래에도 알려진 값)
+    for k in (1, 2, 4, 8):
+        out[f"lag_{k}"] = lag(k)
+    for w in (4, 8, 12):
+        out[f"roll_mean_{w}"] = roll_mean(w)
+        out[f"roll_std_{w}"] = roll_std(w)
+    if n:
+        window12 = s[max(0, n - 12):]
+        out["zero_ratio_12"] = float((window12 == 0).mean())
+    return out
+
+
+def recursive_panel_forecast(
+    model,
+    feature_cols: list[str],
+    hist_frames: dict[tuple, pd.DataFrame],
+    future_frames: dict[tuple, pd.DataFrame],
+    horizon: int,
+) -> dict[tuple, np.ndarray]:
+    """학습된 패널 모델로 조건 내 각 family를 재귀 다단계 예측.
+
+    hist_frames[(t,f)]  : 학습 상한까지의 실측 (yearweek, sales, 외생피처)
+    future_frames[(t,f)]: 예측 구간의 외생·달력 피처 (sales 제외), yearweek 오름차순
+    반환: {(t,f): pred[horizon]}
+    """
+    preds: dict[tuple, np.ndarray] = {}
+    for key, fut in future_frames.items():
+        hist = hist_frames.get(key)
+        if hist is None or fut.empty:
+            continue
+        sales_hist = hist.sort_values("yearweek")["sales"].astype(float).tolist()
+        fut = fut.sort_values("yearweek")
+        yhat = []
+        for _, frow in fut.head(horizon).iterrows():
+            feat = _recompute_lag_features(sales_hist, frow.to_dict())
+            x = pd.DataFrame([{c: feat.get(c, 0.0) for c in feature_cols}]).fillna(0)
+            p = float(np.maximum(model.predict(x)[0], 0.0))
+            yhat.append(p)
+            sales_hist.append(p)  # 다음 스텝 lag 갱신용
+        preds[key] = np.array(yhat, dtype=float)
+    return preds
+
+
 FORECASTERS = {
     "naive": lambda s, h, **_: forecast_naive_last(s, h),
     "arima": lambda s, h, **_: forecast_arima(s, h),
