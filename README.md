@@ -47,7 +47,7 @@ Ecuador Favorita **Store Sales** 데이터로 소매 수요 예측의 전 과정
 | 원칙 | 내용 | 근거 |
 |------|------|------|
 | **DL 정규화** | iTransformer/Autoformer 입력을 열별 **Min-Max 정규화**(논문 §4.2) | 대규모 판매량(GROCERY I ~26만) 없이 트랜스포머 안정 학습(iTransformer median MAPE 33.8) |
-| **패널 정규화** | RF/XGBoost 패널을 **family별 Min-Max**로 정규화 학습·역변환 | 규모 1~265,000 이질 family 혼재 시 작은 family 과대예측 방지(롱테일 MAE 정상화) |
+| **패널 정규화** | RF/XGBoost 패널을 **family별 Min-Max**로 정규화 학습·역변환 | 규모 1~265,000의 이질 family를 동일 스케일에서 학습(롱테일 예측 안정) |
 | **검증 기반 튜닝** | **Optuna(TPE)** — Phase1 XGBoost·iTransformer(val RMSE) + 14장 대표모델 **LSTM+임베딩**(val MAPE) | 과적합 방지·조건별 최적화(논문 §4.4) |
 | **누수 제거** | lag/rolling을 예측값으로 갱신하는 **재귀 다단계 예측** | 13주 예측 시 test 실측 참조 누수 제거 → 공정한 다단계 평가 |
 | **WMAPE 제품수 가중** | scheme 비교를 **Σ n_k·MAPE_k / Σ n_k**로 통일 | 논문 §4.5 Eq.50과 동일한 scheme 비교 |
@@ -128,7 +128,7 @@ SBC (ADI 1.32 · CV² 0.49 rule-base 4클러스터 — Smooth/Intermittent/Errat
 
 ## 주요 결과 (2-type 실습)
 
-- **Phase1 10모델 median MAPE (31~40로 촘촘):** SBA 31.4 · N-HiTS 32.6 · ARIMA 32.9 · **iTransformer 33.8** · LSTM 34.0 · XGBoost 34.6 · TSB 34.6 · Prophet 36.5 · RF 36.9 · Autoformer 39.7. 정규화·튜닝 후 **iTransformer 정상화**. **mean MAPE는 LSTM 45.1로 최저**(robust) — ARIMA와 사실상 공동 선두.
+- **Phase1 10모델 median MAPE (31~40로 촘촘):** SBA 31.4 · N-HiTS 32.6 · ARIMA 32.9 · **iTransformer 33.8** · LSTM 34.0 · XGBoost 34.6 · TSB 34.6 · Prophet 36.5 · RF 36.9 · Autoformer 39.7. 축소 데이터라 단순 모델도 경쟁적. **mean MAPE는 LSTM 45.1로 최저**(간헐 family에 robust) — ARIMA와 사실상 공동 선두.
 - **Phase2 base = LSTM + 임베딩:** ARIMA가 Phase1 상위지만 **단변량이라 임베딩 결합 불가** → 임베딩으로 개선 가능한 실질 best인 **LSTM**을 base로 고정(임베딩=static exog, 논문 iTransformer+임베딩 계열). 임베딩 6종은 근소차(median ~34.4), 조건별 Best는 FastDTW 5개.
 - **11장 scheme (제품수 가중 WMAPE) — 논문 가설과 방향 일치 ✅:** **C(저변동)→ML**(38.21 vs 38.72), **E(고변동)→SBC**(46.64 vs 46.87). 논문(저변동 센터 A→ML, 고변동 센터 B→SBC)의 변동성↔scheme 방향과 일치. 단 격차 <1 WMAPE로 유의성은 제한적.
 - **13장 변수 중요도:** **lag_1 지배(71%)** → 논문 LAG1 top importance와 일치.

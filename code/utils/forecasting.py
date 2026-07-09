@@ -92,8 +92,8 @@ def build_scaled_panel_training(
 ) -> tuple[pd.DataFrame, dict]:
     """family별 Min-Max(판매량)로 정규화한 패널 학습 데이터 생성 (논문 §4.2 forecasting scaling).
 
-    이질적 규모(예: 판매 1 vs 265,000) family를 한 패널에 학습할 때 작은 family를
-    과대예측하는 문제를 방지. lag/rolling은 정규화 판매 이력에서 재계산, 타깃도 정규화.
+    이질적 규모(예: 판매 1 vs 265,000) family를 동일 스케일에서 학습하도록,
+    lag/rolling은 정규화 판매 이력에서 재계산하고 타깃도 정규화한다.
     반환: (학습 DataFrame[feature_cols + 'y'], {(t,f): (lo, rng)})
     """
     rows, scale = [], {}

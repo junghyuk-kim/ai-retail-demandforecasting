@@ -180,8 +180,8 @@ def train_tslib_condition(
     """조건 내 다변량 패널 — iTransformer/Autoformer 공식 구현.
 
     열(family)별 Min-Max 정규화 후 학습·예측, 예측은 역변환(논문 §4.2 forecasting scaling).
-    정규화 부재 시 대규모 판매량(예: GROCERY I ~26만)이 트랜스포머 학습을 망가뜨려
-    iTransformer 성능이 비정상적으로 낮게 나오는 문제를 해결한다.
+    대규모 판매량(예: GROCERY I ~26만)을 [0,1]로 맞춰 트랜스포머가 스케일에 무관하게
+    안정적으로 학습하도록 한다.
     """
     mat = wide_train.fillna(0).to_numpy(dtype=np.float32)
     families = list(wide_train.columns)
