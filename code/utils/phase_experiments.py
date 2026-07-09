@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from .dl_models import DL_MODEL_NAMES, TSLIB_MODELS, condition_wide
+from .dl_models import DL_MODEL_NAMES, NF_MODELS, TSLIB_MODELS, condition_wide
 from .embeddings import EMBEDDERS
 from .forecasting import (
     FORECASTERS,
@@ -21,7 +21,7 @@ from .forecasting import (
 )
 from .intermittent import forecast_sba, forecast_tsb
 from .metrics import FORECAST_METRICS, forecast_metrics, wmape
-from .neuralforecast_adapter import train_nf_condition
+from .neuralforecast_adapter import train_nf_condition, train_nf_condition_static
 from .splits import TEST_WEEKS, TRAIN_WEEK_MAX, TRAINVAL_WEEK_MAX, VAL_WEEKS
 from .tslib_adapter import train_tslib_condition
 from .tuning import tune_itransformer_condition, tune_xgb_condition
@@ -32,9 +32,11 @@ DL_MODELS = ["LSTM", "Autoformer", "N-HiTS", "iTransformer"]
 
 PHASE1_MODELS = STAT_MODELS + ML_MODELS + DL_MODELS
 RANK_METRIC = "mape"  # 조건별 Best 선정 기준 (MAE/RMSE/MAPE/MASE 중)
-REPRESENTATIVE_BASE_MODEL = "XGBoost"  # Phase2 임베딩 대표 base
 
 EMBEDDING_NAMES = list(EMBEDDERS.keys())
+# Phase2 임베딩 하이브리드 대표 base. LSTM은 Phase1 상위(mean MAPE 최저)이면서
+# 임베딩을 static exog로 결합할 수 있는 신경망 → 논문(iTransformer+임베딩)에 더 근접.
+REPRESENTATIVE_BASE_MODEL = "LSTM"
 LOOKBACK = 26  # 13주 예측 지평에 맞춘 lookback (약 반년)
 try:
     import torch
@@ -482,6 +484,24 @@ def run_phase2_condition(
         "phase": 2, "cluster_scheme": cluster_scheme, "type": t, "cluster": cluster,
         "family": f, "model": combo, "base_model": best_model, "embedding": embedding_name,
     }
+
+    if best_model in NF_MODELS:
+        # LSTM/N-HiTS + 임베딩(static exog) 하이브리드 — 논문 iTransformer+임베딩에 근접
+        g_trainval = df[(df["type"] == typ) & (df[cluster_col] == cluster) & (df["yearweek"] <= TRAINVAL_WEEK_MAX)]
+        wide_trainval = condition_wide(g_trainval)
+        static_map = {f: emb_map[(t, f)] for (t, f) in keys if (t, f) in emb_map}
+        preds_fam = {}
+        if not wide_trainval.empty:
+            preds_fam = train_nf_condition_static(
+                wide_trainval, static_map, _horizon(), LOOKBACK, best_model, epochs=DL_EPOCHS
+            )
+        for (t, f) in keys:
+            y_true = test_actual[(t, f)]
+            pred = preds_fam.get(f)
+            if pred is None or len(pred) != len(y_true):
+                pred = np.zeros(len(y_true))
+            rows.append(_metrics_row(base_row(t, f), y_true, pred, trainval_sales[(t, f)]))
+        return pd.DataFrame(rows)
 
     if best_model in PANEL_MODELS:
         extra_cols = [f"emb_{i}" for i in range(emb_dim)]
