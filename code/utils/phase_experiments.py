@@ -24,6 +24,7 @@ from .metrics import FORECAST_METRICS, forecast_metrics, wmape
 from .neuralforecast_adapter import train_nf_condition
 from .splits import TEST_WEEKS, TRAIN_WEEK_MAX, TRAINVAL_WEEK_MAX, VAL_WEEKS
 from .tslib_adapter import train_tslib_condition
+from .tuning import tune_itransformer_condition, tune_xgb_condition
 
 STAT_MODELS = ["ARIMA", "Prophet", "SBA", "TSB"]
 ML_MODELS = ["RF", "XGBoost"]
@@ -237,8 +238,6 @@ def run_phase1_condition(
     tune: bool = True,
 ) -> pd.DataFrame:
     """조건(type×cluster) Phase1: train으로 학습·튜닝(val RMSE) → train+val 재학습 → test 예측."""
-    from .tuning import tune_itransformer_condition, tune_xgb_condition
-
     models = models or PHASE1_MODELS
     feature_cols = _feature_cols(feat_df)
     horizon = _horizon()
