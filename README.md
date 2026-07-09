@@ -134,8 +134,8 @@ SBC (ADI·CV² rule-base 4클러스터)
 
 ### 11장 핵심 결론 (예시)
 
-- 가중 WMAPE: **SBC 3 : ML 2** (type A,B,E → SBC / C,D → ML)
-- **CV·RIDR**과 대조 시 고변동 type(B,E)에서 SBC, 저변동(D)에서 ML 경향 — 논문 Center B/A 스토리와 **부분 정합** (항상 성립하지는 않음)
+- 가중 WMAPE: **SBC 3 : ML 2** (type A,C,D → SBC / B,E → ML)
+- **CV·RIDR**과 대조 시 고변동 type(B,E)에서 ML, 저변동(D)에서 SBC — 논문 Center B/A 스토리와 **부분 불일치** (scheme 선택은 CV만으로 설명되지 않음)
 
 ---
 
@@ -270,7 +270,7 @@ python execute_notebook.py "07_통계_예측모델.ipynb" 14400
 1. **논문 ≠ 실습 Best** — 논문 iTransformer 강세와 Ecuador 실습(XGBoost 우세)은 **데이터·lookback·지표·variate 수** 차이로 설명 가능
 2. **조건별 Best ≠ 전역 1위** — XGBoost가 가장 자주 이겨도 type×cluster마다 최적 모델은 다름
 3. **SBC 라벨 ≠ 최적 알고리즘** — 분류는 해석·세분화 축, 선택은 실측 MAPE/WMAPE
-4. **CV·RIDR ↔ scheme** — 고변동→SBC, 저변동→ML **경향**은 있으나 C type 등 예외 존재
+4. **CV·RIDR ↔ scheme** — 고변동→SBC, 저변동→ML **가설**은 Ecuador 실습에서 B,E→ML·D→SBC 등 **단순 대응하지 않음**
 5. **DL 공식 코드** — TSlib/neuralforecast **모델 클래스** 사용; 논문 벤치마크 `run.py` 파이프라인과 동일하지 않음
 6. **단일 데이터셋** — Ecuador 5 type 결과가 모든 소매 데이터에 일반화되지는 않음
 
