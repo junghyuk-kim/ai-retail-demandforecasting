@@ -5,7 +5,10 @@ from typing import Any
 
 import pandas as pd
 
+import numpy as np
+
 from .feature_importance import feature_cols
+from .forecasting import build_scaled_panel_training, scaled_recursive_forecast
 from .metrics import mape
 from .splits import TRAIN_WEEK_MAX, VAL_WEEKS
 
@@ -26,22 +29,7 @@ def build_xgb(params: dict[str, Any] | None = None):
     from xgboost import XGBRegressor
 
     p = {**DEFAULT_XGB_PARAMS, **(params or {})}
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            p.setdefault("tree_method", "hist")
-            p.setdefault("device", "cuda")
-    except Exception:
-        pass
-    return XGBRegressor(**p)
-
-
-def _type_frames(feat_df: pd.DataFrame, typ: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    cols = feature_cols(feat_df)
-    train = feat_df[(feat_df["type"] == typ) & (feat_df["yearweek"] <= TRAIN_WEEK_MAX)].dropna(subset=cols)
-    val = feat_df[(feat_df["type"] == typ) & (feat_df["yearweek"].isin(VAL_WEEKS))].dropna(subset=cols)
-    return train, val
+    return XGBRegressor(**p)  # CPU: 소규모 패널 + 재귀 단건 예측에 유리
 
 
 def panel_val_mape(
@@ -49,15 +37,25 @@ def panel_val_mape(
     typ: str,
     params: dict[str, Any] | None = None,
 ) -> float:
-    """type 패널 학습 후 검증 구간 MAPE (%) 반환."""
-    train, val = _type_frames(feat_df, typ)
-    if train.empty or val.empty:
-        return float("nan")
+    """type 패널(family별 Min-Max 정규화) 학습 후 검증 구간 재귀예측 평균 MAPE (%).
+
+    엔진과 동일하게 누수 없는 재귀 다단계 예측으로 val을 평가한다.
+    """
     cols = feature_cols(feat_df)
+    sub = feat_df[feat_df["type"] == typ]
+    keys = list(sub[["type", "family"]].drop_duplicates().itertuples(index=False, name=None))
+    train_scaled, scale = build_scaled_panel_training(sub, keys, cols, TRAIN_WEEK_MAX)
+    if train_scaled.empty:
+        return float("nan")
     model = build_xgb(params)
-    model.fit(train[cols].fillna(0), train["sales"].astype(float))
-    pred = model.predict(val[cols].fillna(0))
-    return mape(val["sales"].values, pred)
+    model.fit(train_scaled[cols], train_scaled["y"].astype(float))
+    preds = scaled_recursive_forecast(model, sub, keys, cols, scale, TRAIN_WEEK_MAX, VAL_WEEKS, len(VAL_WEEKS))
+    errs = []
+    for (t, f), pred in preds.items():
+        act = sub[(sub["family"] == f) & (sub["yearweek"].isin(VAL_WEEKS))].sort_values("yearweek")["sales"].to_numpy(float)
+        if len(act) == len(pred) and len(pred):
+            errs.append(mape(act, pred))
+    return float(np.nanmean(errs)) if errs else float("nan")
 
 
 def _suggest_params(trial) -> dict[str, Any]:
