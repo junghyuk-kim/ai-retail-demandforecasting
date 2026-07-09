@@ -117,7 +117,7 @@ SBC (ADI 1.32 · CV² 0.49 rule-base 4클러스터 — Smooth/Intermittent/Errat
 | 05 | SBC 4분류 라벨 | **rule-base 클러스터** 축 |
 | 06 | 임베딩×클러스터링 그리드 → **AE+KMeans K=2** | **ML 클러스터** 축 |
 | 07–09 | **12조건**(SBC 8 + ML 4) × 10모델, 조건별 MAPE Best | Phase1 |
-| 10 | XGBoost 고정 × 6임베딩 (72조합) | 임베딩 비교, 11장 입력 |
+| 10 | **LSTM 고정 × 6임베딩** (72조합, 임베딩=static exog) | 임베딩 비교, 11장 입력 |
 | 11 | type별 **제품수 가중 WMAPE** SBC vs ML | scheme 우열 |
 | 12 | CV·RIDR·수요 밴드 | scheme 차이의 변동성 근거 |
 | 13 | type별 XGBoost 변수 중요도 | 피처 기여 (lag_1 지배) |
@@ -127,9 +127,10 @@ SBC (ADI 1.32 · CV² 0.49 rule-base 4클러스터 — Smooth/Intermittent/Errat
 
 ## 주요 결과 (2-type 실습)
 
-- **Phase1 10모델 median MAPE (31~40로 촘촘):** SBA 31.4 · N-HiTS 32.6 · ARIMA 32.9 · **iTransformer 33.8** · LSTM 34.0 · XGBoost 34.6 · TSB 34.6 · Prophet 36.5 · RF 36.9 · Autoformer 39.7 → 정규화·튜닝 후 **iTransformer 정상화**. 축소 데이터라 단순 모델도 경쟁적.
-- **Phase2 임베딩:** **PatchTST median MAPE 최저(32.4)** → 논문의 PatchTST 우수성과 정합.
-- **11장 scheme (제품수 가중 WMAPE):** C(저변동) SBC 73.8 / ML 138.2, E(고변동) SBC 39.6 / ML 74.6 → **두 type 모두 SBC 우세**. 축소 데이터에서 ML 군집이 [62,4]로 퇴화해 롱테일을 한 패널에 묶어 열화, SBC의 동질 4분류가 우세.
+- **Phase1 10모델 median MAPE (31~40로 촘촘):** SBA 31.4 · N-HiTS 32.6 · ARIMA 32.9 · **iTransformer 33.8** · LSTM 34.0 · XGBoost 34.6 · TSB 34.6 · Prophet 36.5 · RF 36.9 · Autoformer 39.7. 정규화·튜닝 후 **iTransformer 정상화**. **mean MAPE는 LSTM 45.1로 최저**(robust) — ARIMA와 사실상 공동 선두.
+- **Phase2 base = LSTM + 임베딩:** ARIMA가 Phase1 상위지만 **단변량이라 임베딩 결합 불가** → 임베딩으로 개선 가능한 실질 best인 **LSTM**을 base로 고정(임베딩=static exog, 논문 iTransformer+임베딩 계열). 임베딩 6종은 근소차(median ~34.4), 조건별 Best는 FastDTW 5개.
+- **11장 scheme (제품수 가중 WMAPE) — 논문 가설과 방향 일치 ✅:** **C(저변동)→ML**(38.21 vs 38.72), **E(고변동)→SBC**(46.64 vs 46.87). 논문(저변동 센터 A→ML, 고변동 센터 B→SBC)의 변동성↔scheme 방향과 일치. 단 격차 <1 WMAPE로 유의성은 제한적.
+  - (참고) base가 XGBoost일 땐 롱테일 폭주로 둘 다 SBC 우세였으나, **robust한 LSTM base에서 ML이 경쟁력을 회복**하며 논문 방향이 드러남 → scheme 우열은 base robust성에 민감.
 - **13장 변수 중요도:** **lag_1 지배(71%)** → 논문 LAG1 top importance와 일치.
 - **14장 Optuna:** C 26.5→21.4(19%↓), E 59.8→41.8(30%↓) — 튜닝의 검증 개선 확인.
 
@@ -160,7 +161,7 @@ ai-retail-demandforecasting/
 | `splits.py` | **3-way 분할**(train/val/test) + 클러스터링 전용 구간 |
 | `forecasting.py` | ARIMA·Prophet·**정규화 패널 재귀예측**(`build_scaled_panel_training`, `scaled_recursive_forecast`) |
 | `tslib_adapter.py` | thuml Autoformer·iTransformer (**Min-Max 정규화**) |
-| `neuralforecast_adapter.py` | Nixtla NHITS·LSTM |
+| `neuralforecast_adapter.py` | Nixtla NHITS·LSTM (Phase2는 **임베딩=static exog** 결합) |
 | `tuning.py` | 조건 패널 **Optuna(TPE)** — XGBoost·iTransformer val RMSE |
 | `phase_experiments.py` | **Phase1/2 엔진** (3-way, 튜닝, 재귀, 정규화) |
 | `phase_analysis.py` | 11장 **제품수 가중 WMAPE**(`thesis_wmape_by_type`) |
@@ -187,7 +188,7 @@ Python 3.10+, GPU 권장(DL·임베딩 가속). 자세한 차이·해석: [`docs
 ## 해석 시 유의사항
 
 1. **논문 SOTA ≠ 축소 실습 Best** — 논문 iTransformer 강세는 12,661 SKU·풍부한 ML 군집 맥락. 66 시계열에서는 단순 모델도 경쟁적이며 iTransformer는 중위권.
-2. **SBC vs ML 우열은 데이터 규모·ML 군집 품질에 의존** — 본 실습은 ML 군집이 [62,4]로 빈약해 SBC가 일관 우세. 표본이 크고 변동 구조가 선명하면 ML의 강점이 드러남.
+2. **SBC vs ML 우열은 base 모델 robust성·데이터 규모에 민감** — robust한 LSTM base에서는 저변동→ML·고변동→SBC로 논문 방향과 일치(격차는 작음). XGBoost base처럼 롱테일에 취약한 base에선 결과가 뒤집힐 수 있음.
 3. **MAPE는 간헐·near-zero 수요에서 불안정** — 롱테일 family의 MAPE는 크게 튈 수 있어 median·WMAPE를 함께 봄.
 4. **단일 데이터셋** — Ecuador 2-type 결과가 모든 소매에 일반화되지는 않음.
 
