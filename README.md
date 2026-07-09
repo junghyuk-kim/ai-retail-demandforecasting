@@ -40,17 +40,17 @@ Ecuador Favorita **Store Sales** 데이터로 소매 수요 예측의 전 과정
 
 ---
 
-## 핵심 설계 — 결과가 합리적으로 나오도록 한 수정
+## 핵심 설계 원칙 (논문 방법론 반영)
 
-초기 구현은 몇 가지 문제로 비정상적 결과(예: iTransformer가 비상식적으로 낮은 성능, 롱테일 과대예측)를 냈습니다. 논문 방법론에 맞춰 아래를 수정했습니다.
+소매 수요 예측에서 결과의 타당성을 좌우하는 아래 설계를 논문 방법론(§4.2·4.4·4.5)에 맞춰 반영했습니다.
 
-| 수정 | 내용 | 효과 |
+| 원칙 | 내용 | 근거 |
 |------|------|------|
-| **DL 정규화** | iTransformer/Autoformer 입력을 열별 **Min-Max 정규화**(논문 §4.2). 미정규화 시 대규모 판매량(GROCERY I ~26만)이 트랜스포머 학습을 붕괴 | iTransformer가 **중위권 경쟁력 회복**(median MAPE 33.8) |
-| **패널 정규화** | RF/XGBoost 패널을 **family별 Min-Max**로 정규화 학습·역변환. 규모 1~265,000 이질 family를 한 패널에 학습 시 작은 family 과대예측 방지 | LAG 롱테일 MAE 390→7 등 정상화 |
-| **검증 기반 튜닝** | **Optuna(TPE)** 로 XGBoost·iTransformer를 **val 13주 RMSE** 최소화 튜닝(논문 §4.4) | 과적합 방지·조건별 최적화 |
-| **누수 제거** | lag/rolling을 예측값으로 갱신하는 **재귀 다단계 예측**으로 13주 예측 시 test 실측 누수 제거 | 공정한 다단계 평가 |
-| **WMAPE 제품수 가중** | scheme 비교를 **Σ n_k·MAPE_k / Σ n_k**(논문 §4.5 Eq.50)로 통일 | 논문식 scheme 비교 |
+| **DL 정규화** | iTransformer/Autoformer 입력을 열별 **Min-Max 정규화**(논문 §4.2) | 대규모 판매량(GROCERY I ~26만) 없이 트랜스포머 안정 학습(iTransformer median MAPE 33.8) |
+| **패널 정규화** | RF/XGBoost 패널을 **family별 Min-Max**로 정규화 학습·역변환 | 규모 1~265,000 이질 family 혼재 시 작은 family 과대예측 방지(롱테일 MAE 정상화) |
+| **검증 기반 튜닝** | **Optuna(TPE)** — Phase1 XGBoost·iTransformer(val RMSE) + 14장 대표모델 **LSTM+임베딩**(val MAPE) | 과적합 방지·조건별 최적화(논문 §4.4) |
+| **누수 제거** | lag/rolling을 예측값으로 갱신하는 **재귀 다단계 예측** | 13주 예측 시 test 실측 참조 누수 제거 → 공정한 다단계 평가 |
+| **WMAPE 제품수 가중** | scheme 비교를 **Σ n_k·MAPE_k / Σ n_k**로 통일 | 논문 §4.5 Eq.50과 동일한 scheme 비교 |
 
 ---
 
@@ -114,6 +114,7 @@ SBC (ADI 1.32 · CV² 0.49 rule-base 4클러스터 — Smooth/Intermittent/Errat
 |----|---------|------|
 | 02 | 일→주 집계 + **type별 System-Level CV → 고변동 E·저변동 C 자동 선정** | 실험 대상 2-type 결정 |
 | 03 | lag·rolling 등 피처 (2-type) | 패널 예측용 |
+| 04 | System/SKU-Level·SBC 미리보기 (2-type 개요) | 선택적 EDA |
 | 05 | SBC 4분류 라벨 | **rule-base 클러스터** 축 |
 | 06 | 임베딩×클러스터링 그리드 → **AE+KMeans K=2** | **ML 클러스터** 축 |
 | 07–09 | **12조건**(SBC 8 + ML 4) × 10모델, 조건별 MAPE Best | Phase1 |
@@ -131,7 +132,7 @@ SBC (ADI 1.32 · CV² 0.49 rule-base 4클러스터 — Smooth/Intermittent/Errat
 - **Phase2 base = LSTM + 임베딩:** ARIMA가 Phase1 상위지만 **단변량이라 임베딩 결합 불가** → 임베딩으로 개선 가능한 실질 best인 **LSTM**을 base로 고정(임베딩=static exog, 논문 iTransformer+임베딩 계열). 임베딩 6종은 근소차(median ~34.4), 조건별 Best는 FastDTW 5개.
 - **11장 scheme (제품수 가중 WMAPE) — 논문 가설과 방향 일치 ✅:** **C(저변동)→ML**(38.21 vs 38.72), **E(고변동)→SBC**(46.64 vs 46.87). 논문(저변동 센터 A→ML, 고변동 센터 B→SBC)의 변동성↔scheme 방향과 일치. 단 격차 <1 WMAPE로 유의성은 제한적.
 - **13장 변수 중요도:** **lag_1 지배(71%)** → 논문 LAG1 top importance와 일치.
-- **14장 Optuna:** C 26.5→21.4(19%↓), E 59.8→41.8(30%↓) — 튜닝의 검증 개선 확인.
+- **14장 Optuna (대표모델 LSTM+임베딩):** C 18.53→16.57(**10.6%↓**), E 31.38→31.26(0.4%↓) — 검증 13주 MAPE 개선. type별 best 하이퍼파라미터 상이(C: hidden 256·2층 / E: hidden 64·1층).
 
 ---
 
