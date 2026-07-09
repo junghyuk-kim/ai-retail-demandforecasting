@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .config import filter_selected_types
 from .paths import DATA_PROCESSED, SBC_CLUSTER, ML_CLUSTER
 
 
 def load_forecast_frames() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """주간 판매 + 피처 + SBC/ML 클러스터 라벨 병합."""
-    df = pd.read_parquet(DATA_PROCESSED / "df_weekly.parquet")
+    """주간 판매 + 피처 + SBC/ML 클러스터 라벨 병합 (실험 대상 2-type만)."""
+    df = filter_selected_types(pd.read_parquet(DATA_PROCESSED / "df_weekly.parquet"))
     feat_path = DATA_PROCESSED / "df_weekly_features.parquet"
-    feat_df = pd.read_parquet(feat_path) if feat_path.exists() else df.copy()
+    feat_df = filter_selected_types(pd.read_parquet(feat_path)) if feat_path.exists() else df.copy()
     sbc = pd.read_parquet(SBC_CLUSTER)
     ml = pd.read_parquet(ML_CLUSTER)
 
