@@ -121,7 +121,7 @@ SBC (ADI 1.32 · CV² 0.49 rule-base 4클러스터 — Smooth/Intermittent/Errat
 | 11 | type별 **제품수 가중 WMAPE** SBC vs ML | scheme 우열 |
 | 12 | CV·RIDR·수요 밴드 | scheme 차이의 변동성 근거 |
 | 13 | type별 XGBoost 변수 중요도 | 피처 기여 (lag_1 지배) |
-| 14 | type별 XGBoost **Optuna** 튜닝 | val 13주 MAPE 개선 |
+| 14 | type별 **LSTM+임베딩 Optuna** 튜닝 (대표모델) | val 13주 MAPE 개선 |
 
 ---
 
@@ -161,12 +161,11 @@ ai-retail-demandforecasting/
 | `forecasting.py` | ARIMA·Prophet·**정규화 패널 재귀예측**(`build_scaled_panel_training`, `scaled_recursive_forecast`) |
 | `tslib_adapter.py` | thuml Autoformer·iTransformer (**Min-Max 정규화**) |
 | `neuralforecast_adapter.py` | Nixtla NHITS·LSTM (Phase2는 **임베딩=static exog** 결합) |
-| `tuning.py` | 조건 패널 **Optuna(TPE)** — XGBoost·iTransformer val RMSE |
+| `tuning.py` | **Optuna(TPE)** — Phase1 XGBoost·iTransformer(조건, val RMSE), 14장 **LSTM+임베딩**(type, val MAPE) |
 | `phase_experiments.py` | **Phase1/2 엔진** (3-way, 튜닝, 재귀, 정규화) |
 | `phase_analysis.py` | 11장 **제품수 가중 WMAPE**(`thesis_wmape_by_type`) |
 | `metrics.py` | MAE/RMSE/MAPE/MASE/WMAPE |
-| `feature_importance.py` | 13장 XGBoost 변수 중요도 |
-| `hyperparameter_tuning.py` | 14장 type별 Optuna |
+| `feature_importance.py` | 13장 XGBoost 변수 중요도 (gain, 도구용) |
 
 ---
 

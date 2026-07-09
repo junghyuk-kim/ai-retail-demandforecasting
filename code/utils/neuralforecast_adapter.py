@@ -105,6 +105,21 @@ def _nf_model_static(model_name: str, horizon: int, lookback: int, epochs: int, 
     raise ValueError(f"Unsupported neuralforecast model: {model_name}")
 
 
+def build_nf_frames(wide_train: pd.DataFrame, embedding_map: dict):
+    """wide 패널 + family별 임베딩 → (long df, static df, stat_cols). 학습·튜닝 공용."""
+    dim = next(iter(embedding_map.values())).shape[0]
+    stat_cols = [f"emb_{i}" for i in range(dim)]
+    rows, static_rows = [], []
+    for fam in wide_train.columns:
+        emb = embedding_map.get(fam)
+        if emb is None:
+            continue
+        for yw, val in wide_train[fam].items():
+            rows.append({"unique_id": str(fam), "ds": _yearweek_to_date(int(yw)), "y": float(val)})
+        static_rows.append({"unique_id": str(fam), **{f"emb_{i}": float(emb[i]) for i in range(dim)}})
+    return pd.DataFrame(rows), pd.DataFrame(static_rows), stat_cols
+
+
 def train_nf_condition_static(
     wide_train: pd.DataFrame,
     embedding_map: dict,
@@ -122,21 +137,9 @@ def train_nf_condition_static(
         return {}
     from neuralforecast import NeuralForecast
 
-    dim = next(iter(embedding_map.values())).shape[0]
-    stat_cols = [f"emb_{i}" for i in range(dim)]
-
-    rows, static_rows = [], []
-    for fam in wide_train.columns:
-        emb = embedding_map.get(fam)
-        if emb is None:
-            continue
-        for yw, val in wide_train[fam].items():
-            rows.append({"unique_id": str(fam), "ds": _yearweek_to_date(int(yw)), "y": float(val)})
-        static_rows.append({"unique_id": str(fam), **{f"emb_{i}": float(emb[i]) for i in range(dim)}})
-    if not rows:
+    df, static_df, stat_cols = build_nf_frames(wide_train, embedding_map)
+    if df.empty:
         return {}
-    df = pd.DataFrame(rows)
-    static_df = pd.DataFrame(static_rows)
 
     model, col = _nf_model_static(model_name, horizon, lookback, epochs, stat_cols)
     with warnings.catch_warnings():

@@ -86,6 +86,75 @@ def tune_xgb_condition(
     return best
 
 
+DEFAULT_LSTM_PARAMS = dict(
+    input_size=26, encoder_hidden_size=128, encoder_n_layers=2,
+    learning_rate=1e-3, max_steps=300,
+)
+
+
+def lstm_embedding_val_mape(
+    wide_train: pd.DataFrame, embedding_map: dict, val_actual: dict,
+    horizon: int, params: dict | None = None,
+) -> float:
+    """LSTM + 임베딩(static exog)을 type/조건 패널에 학습 → val 구간 평균 family MAPE."""
+    import numpy as np
+
+    from neuralforecast import NeuralForecast
+    from neuralforecast.models import LSTM
+
+    from .metrics import mape
+    from .neuralforecast_adapter import build_nf_frames
+
+    df, static_df, stat_cols = build_nf_frames(wide_train, embedding_map)
+    if df.empty:
+        return float("nan")
+    p = {**DEFAULT_LSTM_PARAMS, **(params or {})}
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = LSTM(
+            h=horizon, stat_exog_list=stat_cols, scaler_type="robust",
+            random_seed=42, accelerator="gpu", devices=1,
+            enable_progress_bar=False, logger=False,
+            early_stop_patience_steps=-1, **p,
+        )
+        nf = NeuralForecast(models=[model], freq="W-MON")
+        nf.fit(df=df, static_df=static_df, val_size=horizon)
+        fcst = nf.predict()
+    errs = []
+    for fam in wide_train.columns:
+        act = val_actual.get(fam)
+        pred = fcst[fcst["unique_id"] == str(fam)]["LSTM"].tail(horizon).to_numpy(dtype=float)
+        if act is not None and len(pred) == len(act) and len(act):
+            errs.append(mape(act, np.maximum(pred, 0.0)))
+    return float(np.nanmean(errs)) if errs else float("nan")
+
+
+def tune_lstm_embedding_type(
+    wide_train: pd.DataFrame, embedding_map: dict, val_actual: dict,
+    horizon: int, n_trials: int = 12, seed: int = 42,
+) -> tuple[dict, float]:
+    """LSTM+임베딩(대표모델) Optuna 튜닝 — val MAPE 최소화. (best_params, best_mape)."""
+    import optuna
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def objective(trial):
+        params = dict(
+            input_size=trial.suggest_categorical("input_size", [13, 26, 39]),
+            encoder_hidden_size=trial.suggest_categorical("encoder_hidden_size", [64, 128, 256]),
+            encoder_n_layers=trial.suggest_int("encoder_n_layers", 1, 3),
+            learning_rate=trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
+            max_steps=trial.suggest_categorical("max_steps", [200, 400, 600]),
+        )
+        return lstm_embedding_val_mape(wide_train, embedding_map, val_actual, horizon, params)
+
+    study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed))
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    return dict(study.best_params), float(study.best_value)
+
+
 def tune_itransformer_condition(
     wide_train: pd.DataFrame,
     val_actual: dict,
