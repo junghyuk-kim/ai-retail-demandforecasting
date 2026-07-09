@@ -76,8 +76,38 @@ def build_family_from_phase2_best(
         return pd.DataFrame()
     out = pd.concat(parts, ignore_index=True)
     return out[
-        ["cluster_scheme", "type", "cluster", "family", "wmape", "val_weight", "final_model", "embedding"]
+        ["cluster_scheme", "type", "cluster", "family", "mape", "wmape", "val_weight", "final_model", "embedding"]
     ]
+
+
+def thesis_wmape_by_type(family_df: pd.DataFrame) -> pd.DataFrame:
+    """논문식 WMAPE = Σ_k n_k·MAPE_k / Σ_k n_k (클러스터 제품수 가중, §4.5 Eq.50).
+
+    각 (type, scheme)에 대해 클러스터별 평균 MAPE를 제품수로 가중 평균.
+    반환: type별 SBC vs ML WMAPE와 우세 scheme.
+    """
+    rows = []
+    for (typ, scheme), g in family_df.groupby(["type", "cluster_scheme"]):
+        by_cluster = g.groupby("cluster")["mape"].agg(["mean", "count"])
+        n_total = by_cluster["count"].sum()
+        weighted_sum = float((by_cluster["mean"] * by_cluster["count"]).sum())
+        rows.append({
+            "type": typ, "scheme": scheme,
+            "n_products": int(n_total),
+            "weighted_sum": round(weighted_sum, 2),
+            "wmape": round(weighted_sum / n_total, 2) if n_total else np.nan,
+        })
+    long = pd.DataFrame(rows)
+    piv = long.pivot(index="type", columns="scheme", values="wmape")
+    out = pd.DataFrame(index=piv.index)
+    out["SBC_wmape"] = piv.get("SBC")
+    out["ML_wmape"] = piv.get("ML")
+    out["delta_SBC_minus_ML"] = out["SBC_wmape"] - out["ML_wmape"]
+    out["better_scheme"] = np.where(
+        out["delta_SBC_minus_ML"] < 0, "SBC",
+        np.where(out["delta_SBC_minus_ML"] > 0, "ML", "tie"),
+    )
+    return out.round(2)
 
 
 def build_family_final_results(
