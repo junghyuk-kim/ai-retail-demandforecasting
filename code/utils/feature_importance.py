@@ -24,15 +24,7 @@ def _xgb_regressor():
         random_state=42,
         n_jobs=-1,
     )
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            params["tree_method"] = "hist"
-            params["device"] = "cuda"
-    except Exception:
-        pass
-    return XGBRegressor(**params)
+    return XGBRegressor(**params)  # CPU: 소규모 패널, 파이프라인 일관성
 
 
 def fit_xgb_importance(
