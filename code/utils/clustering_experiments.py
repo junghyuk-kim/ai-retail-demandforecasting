@@ -22,7 +22,7 @@ def merge_small_clusters(
 ) -> np.ndarray:
     """min_size 미만 클러스터를 가장 가까운(centroid 거리) 생존 클러스터로 병합.
 
-    논문·Daiso 원본의 outlier 재클러스터링 단계에 대응. 축소 데이터(2-type)에서
+    학위논문 원본의 outlier 재클러스터링 단계에 대응. 축소 데이터(2-type)에서
     임베딩 클러스터가 '거대 클러스터 1 + 크기 1~2 outlier'로 퇴화하는 것을 방지한다.
     반환 라벨은 0-based 연속값으로 재부여.
     """

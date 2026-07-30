@@ -42,7 +42,7 @@ def embed_pca(X: np.ndarray, n_components: int = 10) -> np.ndarray:
 
 
 def embed_fastdtw(X: np.ndarray, n_components: int = 10, n_jobs: int = -1) -> np.ndarray:
-    """FastDTW distance matrix -> MDS embedding (Daiso FastDTW 파이프라인)."""
+    """FastDTW distance matrix -> MDS embedding (학위논문 FastDTW 파이프라인)."""
     from joblib import Parallel, delayed
     from sklearn.manifold import MDS
 
