@@ -63,18 +63,36 @@ def _maybe_resample_rows(X: np.ndarray, max_len: int = 64) -> np.ndarray:
 
 
 def _rows_to_gasf(X: np.ndarray) -> np.ndarray:
+    """Official Gasf.transform expects S of shape (n_series, n_timestamps) and
+    internally calls scaler.transform(S), so the scaler must be fitted on data
+    with n_timestamps columns.
+
+    GASF requires each series to be rescaled to [0, 1] *along time* (Wang & Oates).
+    A per-row MinMaxScaler fitted on (T, 1) has 1 feature and therefore cannot be
+    applied to a (1, T) row — that mismatch previously raised ValueError and the
+    caller silently fell back to PCA.
+
+    Fix: rescale each row to [0, 1] across time ourselves, then hand Gasf an
+    identity scaler (fitted on the [0, 1] range over n_timestamps columns) so the
+    official transform math is applied unchanged.
+    """
+    X = np.asarray(X, dtype=np.float64)
+    lo = X.min(axis=1, keepdims=True)
+    hi = X.max(axis=1, keepdims=True)
+    rng = np.where(hi - lo == 0, 1.0, hi - lo)
+    Xn = (X - lo) / rng                      # per-series [0, 1]
+
+    n_timestamps = X.shape[1]
+    identity = MinMaxScaler(feature_range=(0, 1)).fit(
+        np.vstack([np.zeros(n_timestamps), np.ones(n_timestamps)])
+    )
+
     with _gaf_import_context():
         from data.transforms import Gasf
 
-        imgs = []
-        for row in X:
-            scaler = MinMaxScaler(feature_range=(0, 1))
-            s = row.reshape(-1, 1)
-            scaler.fit(s)
-            gasf = Gasf(scaler=scaler, feature_range=(0, 1))
-            g = gasf.transform(row.reshape(1, -1))[0]
-            imgs.append(g)
-    return np.stack(imgs, axis=0).astype(np.float32)
+        gasf = Gasf(scaler=identity, feature_range=(0, 1))
+        imgs = gasf.transform(Xn)            # (n, T, T)
+    return np.asarray(imgs, dtype=np.float32)
 
 
 def embed_gaf_cnn_official(X: np.ndarray, n_components: int = 10, epochs: int = 40) -> np.ndarray:
@@ -116,6 +134,13 @@ def embed_gaf_cnn_official(X: np.ndarray, n_components: int = 10, epochs: int = 
             yb = yb.to(device, non_blocking=pin)
             opt.zero_grad()
             pred = decoder(encoder(xb))
+            # DenseNet 인코더/디코더의 stride·pooling 때문에 복원 이미지 크기가
+            # 입력과 정확히 일치하지 않을 수 있다(예: 64 -> 62). 공식 모델을 그대로
+            # 두고 예측을 입력 해상도로 맞춰 손실을 계산한다.
+            if pred.shape[-2:] != yb.shape[-2:]:
+                pred = nn.functional.interpolate(
+                    pred, size=yb.shape[-2:], mode="bilinear", align_corners=False
+                )
             loss = loss_fn(pred, yb)
             loss.backward()
             opt.step()
