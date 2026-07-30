@@ -209,11 +209,18 @@ ai-retail-demandforecasting/
 pip install -r requirements.txt
 git submodule update --init --recursive
 cd code
-python execute_notebook.py "02_데이터셋_로드_전처리.ipynb"
-# 02 → 03 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 13 → 14 순
+
+python run_pipeline.py            # 02~14 전체 순차 실행
+python run_pipeline.py 06 11      # 특정 구간만
+python run_pipeline.py --list     # 실행 순서 확인
 ```
 
-Python 3.10+, GPU 권장(DL·임베딩 가속). 자세한 차이·해석: [`docs/실험_프레임워크.md`](docs/실험_프레임워크.md)
+개별 장만 돌리려면 `python execute_notebook.py "06_클러스터링_방법.ipynb"` 를 사용합니다.
+실행 로그는 `data/processed/log_<장>.txt` 에 남습니다.
+
+> 07~10장은 결과를 `data/processed/*.parquet` 에 캐시합니다. 파라미터를 바꿔 다시 계산하려면 해당 캐시 파일을 지우고 실행하세요.
+
+Python 3.10+, GPU 권장(DL·임베딩 가속). 자세한 방법론: [`docs/실험_프레임워크.md`](docs/실험_프레임워크.md)
 
 ---
 
