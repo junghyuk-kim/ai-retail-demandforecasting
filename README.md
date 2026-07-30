@@ -83,7 +83,7 @@ pip install -r requirements.txt
 ### 클러스터링 (06장)
 
 6 임베딩 × 4 방법(KMeans, HAC, GMM, DBSCAN) 그리드 → **균형 인지 선정**(degenerate 해 배격). 축소 데이터라 **K=2** 상한.
-→ 채택: **AE + KMeans, [62, 4]** (cluster1 = GROCERY I·BEVERAGES·CLEANING 등 **메가셀러**, cluster2 = **롱테일**)
+→ 채택: **TS2Vec + KMeans, [61, 5]** (cluster2 = GROCERY I·BEVERAGES·CLEANING 등 **메가셀러**(주 평균 125,701), cluster1 = **롱테일**(4,888))
 
 ### 분류 (05장)
 
@@ -135,8 +135,6 @@ SBC (ADI 1.32 · CV² 0.49 rule-base 4클러스터 — Smooth/Intermittent/Errat
 - **11장 scheme (제품수 가중 WMAPE) — 양 type 모두 SBC 우세:** C(저변동) 38.18 vs 38.19(−0.01, 사실상 동률) · E(고변동) 46.72 vs 47.60(−0.88). 논문의 변동성↔scheme 대응(저변동→ML·고변동→SBC)이 **본 축소 실습에서는 재현되지 않았습니다.** ML 군집이 30:3·31:2로 심하게 불균형해 ML scheme이 제 역할을 못 한 것이 주된 원인입니다.
 - **13장 변수 중요도:** **lag_1 지배**(C 68.9% · E 73.7%) → 논문 LAG1 top importance와 일치.
 - **14장 Optuna (대표모델 LSTM+임베딩):** C 18.53→16.57(**10.6%↓**), E 31.38→31.26(0.4%↓) — 검증 13주 MAPE 개선. type별 best 하이퍼파라미터 상이(C: hidden 256·2층 / E: hidden 64·1층).
-
-> **2026-07 재실행** — `embeddings.py`의 `except → PCA` 폴백에 가려 GAF-CNN·TS2Vec이 조용히 PCA 결과를 반환하던 버그를 수정(commit `b6574f0`)한 뒤 06~14장을 재실행한 결과입니다. 이 수정으로 06장 군집 선정이 `AE+KMeans`→`TS2Vec+KMeans`로, 11장 scheme 결론이 바뀌었습니다. 상세는 [`docs/실험_프레임워크.md` §4](docs/실험_프레임워크.md).
 
 ---
 
