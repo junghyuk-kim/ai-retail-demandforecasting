@@ -46,7 +46,7 @@ Ecuador Favorita **Store Sales** 데이터로 소매 수요 예측의 전 과정
 
 | 원칙 | 내용 | 근거 |
 |------|------|------|
-| **DL 정규화** | iTransformer/Autoformer 입력을 열별 **Min-Max 정규화**(논문 §4.2) | 대규모 판매량(GROCERY I ~26만) 없이 트랜스포머 안정 학습(iTransformer median MAPE 33.8) |
+| **DL 정규화** | iTransformer/Autoformer 입력을 열별 **Min-Max 정규화**(논문 §4.2) | 대규모 판매량(GROCERY I ~26만) 없이 트랜스포머 안정 학습(iTransformer median MAPE 51.6) |
 | **패널 정규화** | RF/XGBoost 패널을 **family별 Min-Max**로 정규화 학습·역변환 | 규모 1~265,000의 이질 family를 동일 스케일에서 학습(롱테일 예측 안정) |
 | **검증 기반 튜닝** | **Optuna(TPE)** — Phase1 XGBoost·iTransformer(val RMSE) + 14장 대표모델 **LSTM+임베딩**(val MAPE) | 과적합 방지·조건별 최적화(논문 §4.4) |
 | **누수 제거** | lag/rolling을 예측값으로 갱신하는 **재귀 다단계 예측** | 13주 예측 시 test 실측 참조 누수 제거 → 공정한 다단계 평가 |
@@ -116,7 +116,7 @@ SBC (ADI 1.32 · CV² 0.49 rule-base 4클러스터 — Smooth/Intermittent/Errat
 | 03 | lag·rolling 등 피처 (2-type) | 패널 예측용 |
 | 04 | System/SKU-Level·SBC 미리보기 (2-type 개요) | 선택적 EDA |
 | 05 | SBC 4분류 라벨 | **rule-base 클러스터** 축 |
-| 06 | 임베딩×클러스터링 그리드 → **AE+KMeans K=2** | **ML 클러스터** 축 |
+| 06 | 임베딩×클러스터링 그리드 → **TS2Vec+KMeans K=2** | **ML 클러스터** 축 |
 | 07–09 | **12조건**(SBC 8 + ML 4) × 10모델, 조건별 MAPE Best | Phase1 |
 | 10 | **LSTM 고정 × 6임베딩** (72조합, 임베딩=static exog) | 임베딩 비교, 11장 입력 |
 | 11 | type별 **제품수 가중 WMAPE** SBC vs ML | scheme 우열 |
@@ -128,11 +128,15 @@ SBC (ADI 1.32 · CV² 0.49 rule-base 4클러스터 — Smooth/Intermittent/Errat
 
 ## 주요 결과 (2-type 실습)
 
-- **Phase1 10모델 median MAPE (31~40로 촘촘):** SBA 31.4 · N-HiTS 32.6 · ARIMA 32.9 · **iTransformer 33.8** · LSTM 34.0 · XGBoost 34.6 · TSB 34.6 · Prophet 36.5 · RF 36.9 · Autoformer 39.7. 축소 데이터라 단순 모델도 경쟁적. **mean MAPE는 LSTM 45.1로 최저**(간헐 family에 robust) — ARIMA와 사실상 공동 선두.
-- **Phase2 base = LSTM + 임베딩:** ARIMA가 Phase1 상위지만 **단변량이라 임베딩 결합 불가** → 임베딩으로 개선 가능한 실질 best인 **LSTM**을 base로 고정(임베딩=static exog, 논문 iTransformer+임베딩 계열). 임베딩 6종은 근소차(median ~34.4), 조건별 Best는 FastDTW 5개.
-- **11장 scheme (제품수 가중 WMAPE) — 논문 가설과 방향 일치 ✅:** **C(저변동)→ML**(38.21 vs 38.72), **E(고변동)→SBC**(46.64 vs 46.87). 논문(저변동 센터 A→ML, 고변동 센터 B→SBC)의 변동성↔scheme 방향과 일치. 단 격차 <1 WMAPE로 유의성은 제한적.
-- **13장 변수 중요도:** **lag_1 지배(71%)** → 논문 LAG1 top importance와 일치.
+- **Phase1 10모델 median MAPE (12조건):** **ARIMA 41.7** · **LSTM 42.6** · SBA 45.6 · N-HiTS 46.4 · XGBoost 48.2 · RF 48.4 · TSB 48.5 · **iTransformer 51.6** · Prophet 56.0 · **Autoformer 73.1**. 조건별 승자는 **통계 7**(ARIMA 5·Prophet 2) · **딥러닝 3**(LSTM 2·N-HiTS 1) · **머신러닝 2**(XGBoost 1·RF 1).
+- **밀린 것은 딥러닝 전체가 아니라 트랜스포머 계열:** LSTM은 2위, N-HiTS는 4위로 XGBoost·RF보다 앞섭니다. 하위권은 파라미터가 많은 iTransformer(8위)·Autoformer(10위) 둘뿐입니다. 66계열이라는 표본으로는 어텐션 기반 대형 모델이 학습되지 않습니다.
+- **Phase2 base = LSTM + 임베딩 — ARIMA 단일보다 우수:** median MAPE **ARIMA 41.71 → LSTM 단일 42.58 → LSTM+임베딩 41.66**으로, 임베딩 결합 후 ARIMA를 앞서며 **12조건 중 7조건**에서 우세합니다. 특히 예측이 어려운 구간의 격차가 큽니다 — SBC C-4(Lumpy) ARIMA **247.05** vs LSTM+PCA 44.14, SBC C-3(Erratic) 84.37 vs 34.83. ARIMA는 안정 계열에서 강하지만 Erratic·Lumpy에서 MAPE가 폭발해 실무 적용이 어렵습니다. (ARIMA는 계열별 단변량이라 정적 임베딩이 절편에 흡수돼 결합 자체가 불가능하기도 합니다.)
+- **임베딩별 median MAPE는 근소차:** PCA 41.91 · AE 42.10 · PatchTST 42.53 · TS2Vec 42.79 · FastDTW 42.88 · GAF-CNN 43.14. 조건별 Best는 FastDTW 4 · AE 2 · GAF-CNN 2 · PatchTST 2 · TS2Vec 1 · PCA 1.
+- **11장 scheme (제품수 가중 WMAPE) — 양 type 모두 SBC 우세:** C(저변동) 38.18 vs 38.19(−0.01, 사실상 동률) · E(고변동) 46.72 vs 47.60(−0.88). 논문의 변동성↔scheme 대응(저변동→ML·고변동→SBC)이 **본 축소 실습에서는 재현되지 않았습니다.** ML 군집이 30:3·31:2로 심하게 불균형해 ML scheme이 제 역할을 못 한 것이 주된 원인입니다.
+- **13장 변수 중요도:** **lag_1 지배**(C 68.9% · E 73.7%) → 논문 LAG1 top importance와 일치.
 - **14장 Optuna (대표모델 LSTM+임베딩):** C 18.53→16.57(**10.6%↓**), E 31.38→31.26(0.4%↓) — 검증 13주 MAPE 개선. type별 best 하이퍼파라미터 상이(C: hidden 256·2층 / E: hidden 64·1층).
+
+> **2026-07 재실행** — `embeddings.py`의 `except → PCA` 폴백에 가려 GAF-CNN·TS2Vec이 조용히 PCA 결과를 반환하던 버그를 수정(commit `b6574f0`)한 뒤 06~14장을 재실행한 결과입니다. 이 수정으로 06장 군집 선정이 `AE+KMeans`→`TS2Vec+KMeans`로, 11장 scheme 결론이 바뀌었습니다. 상세는 [`docs/실험_프레임워크.md` §4](docs/실험_프레임워크.md).
 
 ---
 
@@ -186,8 +190,8 @@ Python 3.10+, GPU 권장(DL·임베딩 가속). 자세한 차이·해석: [`docs
 
 ## 해석 시 유의사항
 
-1. **논문 SOTA ≠ 축소 실습 Best** — 논문 iTransformer 강세는 12,661 SKU·풍부한 ML 군집 맥락. 66 시계열에서는 단순 모델도 경쟁적이며 iTransformer는 중위권. 조건별 Phase1 승자 35개를 계층으로 묶으면 **머신러닝 19 · 통계 14 · 딥러닝 2**로, 딥러닝이 뚜렷하게 밀립니다. 원인은 구현이 아니라 **학습 대상 규모**입니다 — 딥러닝은 조건(type×cluster) 단위 global model이라 계열 수가 곧 표본 수인데 본 실습은 조건당 **1~19개**(중앙값 6)뿐입니다. 반면 XGBoost·RF는 행 단위 학습기라 같은 조건이 19계열 × 242주 ≈ **4,600행**으로 보입니다. 자세한 근거는 [`docs/실험_프레임워크.md` §3](docs/실험_프레임워크.md)을 참고하세요.
-2. **SBC vs ML 우열은 데이터 규모·변동 구조에 의존** — 본 실습(2-type·66 시계열)에서는 저변동→ML·고변동→SBC로 논문 방향과 일치하나 격차가 작음. 표본이 크고 변동 구조가 선명할수록 방법론 우열이 뚜렷해짐.
+1. **논문 SOTA ≠ 축소 실습 Best** — 논문 iTransformer 강세는 12,661 SKU·3년의 대규모 맥락. 66 시계열에서는 iTransformer가 **하위권(51.6, 8위)** 이고 ARIMA(41.7)·LSTM(42.6)이 앞섭니다. 다만 **밀린 것은 딥러닝 전체가 아니라 트랜스포머 계열**입니다 — LSTM 2위·N-HiTS 4위로 XGBoost·RF보다 앞서고, 하위권은 파라미터가 많은 iTransformer·Autoformer 둘뿐입니다. 원인은 구현이 아니라 **학습 대상 규모**입니다: 딥러닝은 조건(type×cluster) 단위 global model이라 계열 수가 곧 표본 수인데 본 실습은 조건당 **1~19개**(중앙값 6)뿐입니다. 자세한 근거는 [`docs/실험_프레임워크.md` §3](docs/실험_프레임워크.md)을 참고하세요.
+2. **SBC vs ML 우열은 데이터 규모에 의존** — 본 축소 실습(2-type·66 시계열)에서는 **양 type 모두 SBC 우세**로, 논문의 변동성↔scheme 대응(저변동→ML·고변동→SBC)이 재현되지 않았습니다. ML 군집이 30:3·31:2로 심하게 불균형해 ML scheme이 제 역할을 못 했습니다. 표본이 크고 변동 구조가 선명해야 방법론 우열이 드러납니다.
 3. **MAPE는 간헐·near-zero 수요에서 불안정** — 롱테일 family의 MAPE는 크게 튈 수 있어 median·WMAPE를 함께 봄.
 4. **단일 데이터셋** — Ecuador 2-type 결과가 모든 소매에 일반화되지는 않음.
 
